@@ -8,7 +8,25 @@ target_link_libraries(device_test PRIVATE muda::runtime)
 target_compile_options(device_test PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME device_test COMMAND device_test)
 
+add_executable(translator_test translator_test.cpp)
+target_link_libraries(translator_test PRIVATE muda::compiler)
+target_compile_definitions(translator_test PRIVATE MUDA_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+target_compile_options(translator_test PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME translator_test COMMAND translator_test)
+
 add_executable(compiler_test compiler_test.cpp)
 target_link_libraries(compiler_test PRIVATE muda::compiler)
+target_compile_definitions(compiler_test PRIVATE MUDA_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
 target_compile_options(compiler_test PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME compiler_test COMMAND compiler_test)
+
+add_executable(vector_add_test vector_add_test.cpp)
+target_link_libraries(vector_add_test PRIVATE muda::compiler muda::runtime)
+target_compile_definitions(vector_add_test PRIVATE MUDA_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+target_compile_options(vector_add_test PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME vector_add_test COMMAND vector_add_test)
+
+set_tests_properties(compiler_test vector_add_test PROPERTIES SKIP_RETURN_CODE 77)
+
+add_test(NAME mudac_version COMMAND mudac --version)
+add_test(NAME muda_version COMMAND muda version)

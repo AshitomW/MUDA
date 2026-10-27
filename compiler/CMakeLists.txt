@@ -1,4 +1,10 @@
-add_library(muda_compiler src/driver.cpp)
+add_library(
+  muda_compiler
+  src/driver.cpp
+  src/process.cpp
+  src/toolchain.cpp
+  src/translator.cpp
+)
 add_library(muda::compiler ALIAS muda_compiler)
 
 target_include_directories(

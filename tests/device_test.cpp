@@ -1,3 +1,8 @@
+/**
+ * @file device_test.cpp
+ * @brief Tests Metal device discovery.
+ */
+
 #include "muda/runtime/device.hpp"
 
 #include <iostream>

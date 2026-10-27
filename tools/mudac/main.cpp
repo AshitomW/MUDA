@@ -1,9 +1,14 @@
-#include "muda/compiler/driver.hpp"
-#include "muda/version.hpp"
+/**
+ * @file main.cpp
+ * @brief Implements the MUDA CUDA-to-Metal compiler CLI.
+ */
 
 #include <filesystem>
 #include <iostream>
 #include <string_view>
+
+#include "muda/compiler/driver.hpp"
+#include "muda/version.hpp"
 
 namespace {
 
@@ -12,40 +17,73 @@ void PrintUsage(std::ostream& out) {
       << "Usage: mudac [options] <file.cu>\n"
       << "\n"
       << "Options:\n"
-      << "  -h, --help    Show this help\n"
-      << "  --version     Show version\n";
+      << "  -o <path>                 Write the Metal library to <path>\n"
+      << "  -k, --keep-intermediates  Keep generated .metal and .air files\n"
+      << "  -h, --help                Show this help\n"
+      << "  --version                 Show version\n";
 }
 
 }
 
 int main(int argc, char** argv) {
-  if (argc == 2) {
-    const std::string_view arg = argv[1];
-    if (arg == "--version") {
+  std::filesystem::path input;
+  std::filesystem::path output;
+  bool keep_intermediates = false;
+
+  for (int index = 1; index < argc; ++index) {
+    const std::string_view argument = argv[index];
+    if (argument == "--version") {
       std::cout << "mudac " << muda::kVersion << "\n";
       return 0;
     }
-    if (arg == "-h" || arg == "--help") {
+    if (argument == "-h" || argument == "--help") {
       PrintUsage(std::cout);
       return 0;
     }
+    if (argument == "-k" || argument == "--keep-intermediates") {
+      keep_intermediates = true;
+      continue;
+    }
+    if (argument == "-o") {
+      if (index + 1 >= argc) {
+        std::cerr << "mudac: missing output path\n";
+        return 2;
+      }
+      output = argv[++index];
+      continue;
+    }
+    if (!argument.empty() && argument.front() == '-') {
+      std::cerr << "mudac: unknown option: " << argument << "\n";
+      return 2;
+    }
+    if (!input.empty()) {
+      std::cerr << "mudac: multiple input files are not supported\n";
+      return 2;
+    }
+    input = argument;
   }
 
-  if (argc != 2) {
+  if (input.empty()) {
     PrintUsage(std::cerr);
     return 2;
   }
 
+  if (output.empty()) {
+    output = input;
+    output.replace_extension(".metallib");
+  }
+
   muda::compiler::CompileOptions options;
-  options.input = std::filesystem::path(argv[1]);
-  options.output = options.input;
-  options.output.replace_extension();
+  options.input = input;
+  options.output = output;
+  options.keep_intermediates = keep_intermediates;
 
   const muda::compiler::CompileResult result = muda::compiler::Compile(options);
   if (result.status != muda::compiler::Status::kOk) {
     std::cerr << "mudac: " << result.message << "\n";
-    return 2;
+    return 1;
   }
 
+  std::cout << "wrote " << result.metallib_path.string() << " (" << result.kernel_name << ")\n";
   return 0;
 }

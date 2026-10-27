@@ -1,0 +1,72 @@
+/**
+ * @file translator_test.cpp
+ * @brief Tests CUDA-to-MSL translation.
+ */
+
+#include "muda/compiler/translator.hpp"
+
+#include <filesystem>
+#include <fstream>
+#include <iostream>
+#include <sstream>
+#include <string>
+
+int main() {
+  const std::filesystem::path source_path =
+      std::filesystem::path(MUDA_SOURCE_DIR) / "samples/vector_add.cu";
+  std::ifstream source_file(source_path, std::ios::binary);
+  if (!source_file) {
+    std::cerr << "cannot open " << source_path << "\n";
+    return 1;
+  }
+
+  std::ostringstream source_buffer;
+  source_buffer << source_file.rdbuf();
+  const std::string source = source_buffer.str();
+
+  const muda::compiler::TranslationResult result = muda::compiler::TranslateCudaToMsl(source);
+  if (!result.ok) {
+    std::cerr << "translation failed: " << result.error << "\n";
+    return 1;
+  }
+  if (result.kernel.name != "vector_add") {
+    std::cerr << "unexpected kernel name: " << result.kernel.name << "\n";
+    return 1;
+  }
+  if (result.kernel.parameters.size() != 4) {
+    std::cerr << "unexpected parameter count\n";
+    return 1;
+  }
+  if (result.kernel.parameters[0].name != "a" || result.kernel.parameters[3].name != "n") {
+    std::cerr << "unexpected parameter names\n";
+    return 1;
+  }
+
+  const std::string& msl = result.kernel.msl;
+  const char* required[] = {
+      "kernel void vector_add(",
+      "device const float* a [[buffer(0)]]",
+      "device const float* b [[buffer(1)]]",
+      "device float* out [[buffer(2)]]",
+      "constant int& n [[buffer(3)]]",
+      "threadgroup_position_in_grid.x",
+      "threads_per_threadgroup.x",
+      "thread_position_in_threadgroup.x",
+  };
+  for (const char* text : required) {
+    if (msl.find(text) == std::string::npos) {
+      std::cerr << "missing MSL fragment: " << text << "\n";
+      return 1;
+    }
+  }
+
+  const muda::compiler::TranslationResult invalid =
+      muda::compiler::TranslateCudaToMsl("int main() { return 0; }");
+  if (invalid.ok || invalid.error.empty()) {
+    std::cerr << "invalid input should fail\n";
+    return 1;
+  }
+
+  std::cout << "translated vector_add\n";
+  return 0;
+}

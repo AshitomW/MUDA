@@ -1,3 +1,8 @@
+/**
+ * @file version_test.cpp
+ * @brief Tests generated version metadata.
+ */
+
 #include "muda/version.hpp"
 
 #include <iostream>

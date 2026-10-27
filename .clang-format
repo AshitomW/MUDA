@@ -6,3 +6,4 @@ DerivePointerAlignment: false
 PointerAlignment: Left
 SortIncludes: CaseSensitive
 IncludeBlocks: Regroup
+FixNamespaceComments: false

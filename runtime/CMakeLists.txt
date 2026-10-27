@@ -1,4 +1,9 @@
-add_library(muda_runtime src/device.mm)
+add_library(
+  muda_runtime
+  src/buffer.mm
+  src/device.mm
+  src/kernel.mm
+)
 add_library(muda::runtime ALIAS muda_runtime)
 
 target_include_directories(

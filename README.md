@@ -30,4 +30,5 @@ pieces where practical, and report clear errors for what cannot run.
 
 ## Status
 
-Early scaffolding. MUDA is not usable yet.
+Early prototype. MUDA can translate and run a simple vector-add kernel on Apple
+Silicon. It is not generally usable yet.

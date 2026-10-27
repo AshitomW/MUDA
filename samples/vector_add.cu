@@ -1,3 +1,8 @@
+/**
+ * @file vector_add.cu
+ * @brief Sample CUDA vector-add kernel used by the prototype.
+ */
+
 #include <cuda_runtime.h>
 
 #include <cstddef>
