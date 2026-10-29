@@ -5,13 +5,18 @@
 
 #include "muda/compiler/toolchain.hpp"
 
+#include <array>
+#include <string_view>
+
 #include "process.hpp"
 
 namespace muda::compiler {
 
 bool MetalToolchainAvailable() {
-  return detail::RunProcess({"xcrun", "-f", "metal"}, true) == 0 &&
-         detail::RunProcess({"xcrun", "-f", "metallib"}, true) == 0;
+  constexpr std::array<std::string_view, 3> kCheckMetal = {"xcrun", "-f", "metal"};
+  constexpr std::array<std::string_view, 3> kCheckMetallib = {"xcrun", "-f", "metallib"};
+  return detail::RunProcess(kCheckMetal, detail::ProcessOutputMode::kSilent).succeeded() &&
+         detail::RunProcess(kCheckMetallib, detail::ProcessOutputMode::kSilent).succeeded();
 }
 
-}
+}  // namespace muda::compiler

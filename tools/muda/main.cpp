@@ -28,7 +28,7 @@ int Doctor() {
 
   for (const muda::runtime::DeviceInfo& device : devices) {
     std::cout << "device: " << device.name << "\n"
-              << "  backend: " << device.backend << "\n"
+              << "  backend: " << muda::runtime::BackendName(device.backend) << "\n"
               << "  working set: " << device.recommended_working_set_bytes << " bytes\n"
               << "  max threads per threadgroup: " << device.max_threads_per_threadgroup << "\n";
   }
@@ -41,7 +41,7 @@ int Doctor() {
   return toolchain ? 0 : 1;
 }
 
-}
+}  // namespace
 
 int main(int argc, char** argv) {
   if (argc != 2) {

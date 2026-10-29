@@ -1,11 +1,12 @@
 /**
  * @file process.cpp
- * @brief Runs external toolchain processes without a shell.
+ * @brief Runs external toolchain processes.
  */
 
 #include "process.hpp"
 
 #include <fcntl.h>
+#include <spawn.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -13,48 +14,67 @@
 #include <string>
 #include <vector>
 
+extern char** environ;
+
 namespace muda::compiler::detail {
 
-int RunProcess(const std::vector<std::string>& arguments, bool silent) {
-  if (arguments.empty()) {
-    return -1;
+ProcessResult RunProcess(std::span<const std::string_view> arguments,
+                         ProcessOutputMode output_mode) {
+  if (arguments.empty() || arguments.front().empty()) {
+    return {-1};
+  }
+
+  std::vector<std::string> owned_args;
+  owned_args.reserve(arguments.size());
+  for (const std::string_view arg : arguments) {
+    owned_args.emplace_back(arg);
   }
 
   std::vector<char*> argv;
-  argv.reserve(arguments.size() + 1);
-  for (const std::string& argument : arguments) {
-    argv.push_back(const_cast<char*>(argument.c_str()));
+  argv.reserve(owned_args.size() + 1);
+  for (std::string& arg : owned_args) {
+    argv.push_back(arg.data());
   }
   argv.push_back(nullptr);
 
-  const pid_t child = fork();
-  if (child == -1) {
-    return -1;
+  posix_spawn_file_actions_t file_actions;
+  if (posix_spawn_file_actions_init(&file_actions) != 0) {
+    return {-1};
   }
-  if (child == 0) {
-    if (silent) {
-      const int null_fd = open("/dev/null", O_WRONLY);
-      if (null_fd != -1) {
-        dup2(null_fd, STDOUT_FILENO);
-        dup2(null_fd, STDERR_FILENO);
-        close(null_fd);
-      }
+
+  int spawn_result = 0;
+  pid_t child = -1;
+
+  if (output_mode == ProcessOutputMode::kSilent) {
+    spawn_result =
+        posix_spawn_file_actions_addopen(&file_actions, STDOUT_FILENO, "/dev/null", O_WRONLY, 0);
+    if (spawn_result == 0) {
+      spawn_result =
+          posix_spawn_file_actions_addopen(&file_actions, STDERR_FILENO, "/dev/null", O_WRONLY, 0);
     }
-    execvp(argv.front(), argv.data());
-    _exit(127);
+  }
+
+  if (spawn_result == 0) {
+    spawn_result = posix_spawnp(&child, argv.front(), &file_actions, nullptr, argv.data(), environ);
+  }
+
+  (void)posix_spawn_file_actions_destroy(&file_actions);
+
+  if (spawn_result != 0 || child == -1) {
+    return {-1};
   }
 
   int status = 0;
   while (waitpid(child, &status, 0) == -1) {
     if (errno != EINTR) {
-      return -1;
+      return {-1};
     }
   }
 
   if (!WIFEXITED(status)) {
-    return -1;
+    return {-1};
   }
-  return WEXITSTATUS(status);
+  return {WEXITSTATUS(status)};
 }
 
-}
+}  // namespace muda::compiler::detail

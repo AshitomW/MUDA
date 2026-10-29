@@ -31,11 +31,11 @@ int main() {
   muda::compiler::CompileOptions options;
   options.input = std::filesystem::path(MUDA_SOURCE_DIR) / "samples/vector_add.cu";
   options.output = temp / "vector_add.metallib";
-  options.keep_intermediates = true;
+  options.intermediates = muda::compiler::IntermediatePolicy::kKeep;
 
   const muda::compiler::CompileResult result = muda::compiler::Compile(options);
   if (result.status != muda::compiler::Status::kOk) {
-    std::cerr << "compile failed: " << result.message << "\n";
+    std::cerr << "compile failed [" << result.diagnostic_id() << "]: " << result.message() << "\n";
     return 1;
   }
   if (result.kernel_name != "vector_add") {

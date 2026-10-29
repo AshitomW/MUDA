@@ -16,8 +16,8 @@ int main() {
   }
 
   for (const muda::runtime::DeviceInfo& device : devices) {
-    if (device.backend != "metal") {
-      std::cerr << "unexpected backend: " << device.backend << "\n";
+    if (device.backend != muda::runtime::BackendKind::kMetal) {
+      std::cerr << "unexpected backend: " << muda::runtime::BackendName(device.backend) << "\n";
       return 1;
     }
     if (device.name.empty()) {

@@ -23,12 +23,12 @@ void PrintUsage(std::ostream& out) {
       << "  --version                 Show version\n";
 }
 
-}
+}  // namespace
 
 int main(int argc, char** argv) {
   std::filesystem::path input;
   std::filesystem::path output;
-  bool keep_intermediates = false;
+  muda::compiler::IntermediatePolicy intermediates = muda::compiler::IntermediatePolicy::kRemove;
 
   for (int index = 1; index < argc; ++index) {
     const std::string_view argument = argv[index];
@@ -41,7 +41,7 @@ int main(int argc, char** argv) {
       return 0;
     }
     if (argument == "-k" || argument == "--keep-intermediates") {
-      keep_intermediates = true;
+      intermediates = muda::compiler::IntermediatePolicy::kKeep;
       continue;
     }
     if (argument == "-o") {
@@ -76,11 +76,11 @@ int main(int argc, char** argv) {
   muda::compiler::CompileOptions options;
   options.input = input;
   options.output = output;
-  options.keep_intermediates = keep_intermediates;
+  options.intermediates = intermediates;
 
   const muda::compiler::CompileResult result = muda::compiler::Compile(options);
   if (result.status != muda::compiler::Status::kOk) {
-    std::cerr << "mudac: " << result.message << "\n";
+    std::cerr << "mudac [" << result.diagnostic_id() << "]: " << result.message() << "\n";
     return 1;
   }
 

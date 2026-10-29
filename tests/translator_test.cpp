@@ -1,6 +1,6 @@
 /**
  * @file translator_test.cpp
- * @brief Tests CUDA-to-MSL translation.
+ * @brief Tests CUDA-to-MSL translation and diagnostic codes.
  */
 
 #include "muda/compiler/translator.hpp"
@@ -25,8 +25,9 @@ int main() {
   const std::string source = source_buffer.str();
 
   const muda::compiler::TranslationResult result = muda::compiler::TranslateCudaToMsl(source);
-  if (!result.ok) {
-    std::cerr << "translation failed: " << result.error << "\n";
+  if (!result.ok()) {
+    std::cerr << "translation failed [" << result.diagnostic_id() << "]: " << result.error()
+              << "\n";
     return 1;
   }
   if (result.kernel.name != "vector_add") {
@@ -37,8 +38,26 @@ int main() {
     std::cerr << "unexpected parameter count\n";
     return 1;
   }
-  if (result.kernel.parameters[0].name != "a" || result.kernel.parameters[3].name != "n") {
-    std::cerr << "unexpected parameter names\n";
+  const auto& param0 = result.kernel.parameters[0];
+  const auto& param2 = result.kernel.parameters[2];
+  const auto& param3 = result.kernel.parameters[3];
+  if (param0.name != "a" ||
+      param0.type != muda::compiler::DataType{muda::compiler::ScalarType::kFloat32,
+                                              muda::compiler::VectorWidth::k1} ||
+      param0.address_space != muda::compiler::AddressSpace::kDevice ||
+      param0.access != muda::compiler::AccessQualifier::kReadOnly) {
+    std::cerr << "unexpected parameter[0] metadata\n";
+    return 1;
+  }
+  if (param2.access != muda::compiler::AccessQualifier::kReadWrite) {
+    std::cerr << "unexpected parameter[2] mutability\n";
+    return 1;
+  }
+  if (param3.name != "n" ||
+      param3.type != muda::compiler::DataType{muda::compiler::ScalarType::kInt32,
+                                              muda::compiler::VectorWidth::k1} ||
+      param3.address_space != muda::compiler::AddressSpace::kConstant || param3.byte_size() != 4) {
+    std::cerr << "unexpected parameter[3] metadata\n";
     return 1;
   }
 
@@ -62,8 +81,16 @@ int main() {
 
   const muda::compiler::TranslationResult invalid =
       muda::compiler::TranslateCudaToMsl("int main() { return 0; }");
-  if (invalid.ok || invalid.error.empty()) {
-    std::cerr << "invalid input should fail\n";
+  if (invalid.ok() || invalid.code != muda::compiler::DiagnosticCode::kMissingGlobalKernel) {
+    std::cerr << "invalid input should fail with kMissingGlobalKernel\n";
+    return 1;
+  }
+
+  const muda::compiler::TranslationResult unsupported =
+      muda::compiler::TranslateCudaToMsl("__global__ void k(double* x) {}");
+  if (unsupported.ok() ||
+      unsupported.code != muda::compiler::DiagnosticCode::kUnsupportedParameterType) {
+    std::cerr << "double parameter should fail with kUnsupportedParameterType\n";
     return 1;
   }
 

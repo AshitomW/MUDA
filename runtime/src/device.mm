@@ -21,7 +21,7 @@ DeviceInfo MakeInfo(id<MTLDevice> device) {
   DeviceInfo info;
   const char* name = device.name.UTF8String;
   info.name = name != nullptr ? name : "";
-  info.backend = "metal";
+  info.backend = BackendKind::kMetal;
   info.recommended_working_set_bytes =
       static_cast<std::uint64_t>(device.recommendedMaxWorkingSetSize);
   info.max_threads_per_threadgroup =
@@ -29,7 +29,7 @@ DeviceInfo MakeInfo(id<MTLDevice> device) {
   return info;
 }
 
-}
+}  // namespace
 
 Device::Device() = default;
 Device::~Device() = default;
@@ -92,4 +92,4 @@ std::vector<DeviceInfo> EnumerateDevices() {
   return result;
 }
 
-}
+}  // namespace muda::runtime

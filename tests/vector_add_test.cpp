@@ -41,7 +41,7 @@ int main() {
 
     const muda::compiler::CompileResult compiled = muda::compiler::Compile(options);
     if (compiled.status != muda::compiler::Status::kOk) {
-      std::cerr << "compile failed: " << compiled.message << "\n";
+      std::cerr << "compile failed: " << compiled.message() << "\n";
       return 1;
     }
 

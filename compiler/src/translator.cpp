@@ -1,12 +1,14 @@
 /**
  * @file translator.cpp
- * @brief Implements the CUDA-to-MSL translation prototype.
+ * @brief Implements CUDA-to-MSL translation.
  */
 
 #include "muda/compiler/translator.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -15,17 +17,77 @@
 namespace muda::compiler {
 namespace {
 
-bool IsIdentifierStart(char value) {
+struct TypeMappingEntry {
+  std::string_view cuda_spelling;
+  DataType type;
+};
+
+constexpr std::array<TypeMappingEntry, 33> kTypeTable = {{
+    {"bool", {ScalarType::kBool, VectorWidth::k1}},
+    {"char", {ScalarType::kInt8, VectorWidth::k1}},
+    {"signed char", {ScalarType::kInt8, VectorWidth::k1}},
+    {"uchar", {ScalarType::kUInt8, VectorWidth::k1}},
+    {"unsigned char", {ScalarType::kUInt8, VectorWidth::k1}},
+    {"short", {ScalarType::kInt16, VectorWidth::k1}},
+    {"ushort", {ScalarType::kUInt16, VectorWidth::k1}},
+    {"unsigned short", {ScalarType::kUInt16, VectorWidth::k1}},
+    {"int", {ScalarType::kInt32, VectorWidth::k1}},
+    {"int2", {ScalarType::kInt32, VectorWidth::k2}},
+    {"int3", {ScalarType::kInt32, VectorWidth::k3}},
+    {"int4", {ScalarType::kInt32, VectorWidth::k4}},
+    {"uint", {ScalarType::kUInt32, VectorWidth::k1}},
+    {"unsigned", {ScalarType::kUInt32, VectorWidth::k1}},
+    {"unsigned int", {ScalarType::kUInt32, VectorWidth::k1}},
+    {"uint2", {ScalarType::kUInt32, VectorWidth::k2}},
+    {"uint3", {ScalarType::kUInt32, VectorWidth::k3}},
+    {"uint4", {ScalarType::kUInt32, VectorWidth::k4}},
+    {"long", {ScalarType::kInt64, VectorWidth::k1}},
+    {"long long", {ScalarType::kInt64, VectorWidth::k1}},
+    {"long2", {ScalarType::kInt64, VectorWidth::k2}},
+    {"long3", {ScalarType::kInt64, VectorWidth::k3}},
+    {"long4", {ScalarType::kInt64, VectorWidth::k4}},
+    {"ulong", {ScalarType::kUInt64, VectorWidth::k1}},
+    {"unsigned long", {ScalarType::kUInt64, VectorWidth::k1}},
+    {"unsigned long long", {ScalarType::kUInt64, VectorWidth::k1}},
+    {"half", {ScalarType::kFloat16, VectorWidth::k1}},
+    {"half2", {ScalarType::kFloat16, VectorWidth::k2}},
+    {"half3", {ScalarType::kFloat16, VectorWidth::k3}},
+    {"half4", {ScalarType::kFloat16, VectorWidth::k4}},
+    {"float", {ScalarType::kFloat32, VectorWidth::k1}},
+    {"float2", {ScalarType::kFloat32, VectorWidth::k2}},
+    {"float3", {ScalarType::kFloat32, VectorWidth::k3}},
+}};
+
+struct BuiltinMappingEntry {
+  std::string_view cuda_name;
+  std::string_view msl_name;
+};
+
+constexpr std::array<BuiltinMappingEntry, 4> kBuiltinTable = {{
+    {"blockIdx", "threadgroup_position_in_grid"},
+    {"blockDim", "threads_per_threadgroup"},
+    {"threadIdx", "thread_position_in_threadgroup"},
+    {"gridDim", "threadgroups_per_grid"},
+}};
+
+constexpr std::array<std::string_view, 20> kUnsupportedConstructs = {{
+    "__shared__", "__device__",  "__constant__",   "__managed__",      "cooperative_groups",
+    "atomicAdd",  "atomicSub",   "atomicCAS",      "atomicExch",       "atomicMin",
+    "atomicMax",  "atomicInc",   "atomicDec",      "atomicAnd",        "atomicOr",
+    "atomicXor",  "__shfl_sync", "__shfl_up_sync", "__shfl_down_sync", "printf",
+}};
+
+bool IsIdentifierStart(char value) noexcept {
   return std::isalpha(static_cast<unsigned char>(value)) != 0 || value == '_';
 }
 
-bool IsIdentifierChar(char value) {
+bool IsIdentifierChar(char value) noexcept {
   return std::isalnum(static_cast<unsigned char>(value)) != 0 || value == '_';
 }
 
-bool IsSpace(char value) { return std::isspace(static_cast<unsigned char>(value)) != 0; }
+bool IsSpace(char value) noexcept { return std::isspace(static_cast<unsigned char>(value)) != 0; }
 
-std::string_view Trim(std::string_view text) {
+std::string_view Trim(std::string_view text) noexcept {
   while (!text.empty() && IsSpace(text.front())) {
     text.remove_prefix(1);
   }
@@ -37,6 +99,7 @@ std::string_view Trim(std::string_view text) {
 
 std::string NormalizeSpace(std::string_view text) {
   std::string result;
+  result.reserve(text.size());
   bool pending_space = false;
   for (const char value : text) {
     if (IsSpace(value)) {
@@ -52,7 +115,8 @@ std::string NormalizeSpace(std::string_view text) {
   return result;
 }
 
-std::size_t FindMatching(std::string_view text, std::size_t open, char open_char, char close_char) {
+std::size_t FindMatching(std::string_view text, std::size_t open, char open_char,
+                         char close_char) noexcept {
   int depth = 0;
   char quote = '\0';
   bool escape = false;
@@ -163,6 +227,7 @@ std::vector<std::string_view> SplitParameters(std::string_view text) {
 
 void RemoveIdentifier(std::string& text, std::string_view identifier) {
   std::string result;
+  result.reserve(text.size());
   std::size_t index = 0;
 
   while (index < text.size()) {
@@ -187,51 +252,27 @@ void RemoveIdentifier(std::string& text, std::string_view identifier) {
   text = NormalizeSpace(result);
 }
 
-std::string MapType(std::string_view type) {
-  if (type == "float" || type == "float2" || type == "float3" || type == "float4") {
-    return std::string(type);
+std::optional<DataType> ResolveCudaType(std::string_view spelling) noexcept {
+  if (spelling == "float4") {
+    return DataType{ScalarType::kFloat32, VectorWidth::k4};
   }
-  if (type == "half" || type == "half2" || type == "half3" || type == "half4") {
-    return std::string(type);
+  for (const TypeMappingEntry& entry : kTypeTable) {
+    if (entry.cuda_spelling == spelling) {
+      return entry.type;
+    }
   }
-  if (type == "int" || type == "int2" || type == "int3" || type == "int4") {
-    return std::string(type);
-  }
-  if (type == "uint" || type == "uint2" || type == "uint3" || type == "uint4") {
-    return std::string(type);
-  }
-  if (type == "unsigned" || type == "unsigned int") {
-    return "uint";
-  }
-  if (type == "short" || type == "ushort" || type == "char" || type == "uchar") {
-    return std::string(type);
-  }
-  if (type == "unsigned char") {
-    return "uchar";
-  }
-  if (type == "unsigned short") {
-    return "ushort";
-  }
-  if (type == "bool") {
-    return "bool";
-  }
-  if (type == "long" || type == "unsigned long" || type == "long2" || type == "long3" ||
-      type == "long4") {
-    return std::string(type);
-  }
-  return {};
+  return std::nullopt;
 }
 
 struct ParsedParameter {
-  bool ok = false;
+  DiagnosticCode code = DiagnosticCode::kOk;
   KernelParameter parameter;
-  std::string error;
 };
 
 ParsedParameter ParseParameter(std::string_view text, std::size_t index) {
   const std::string normalized = NormalizeSpace(text);
   if (normalized.empty()) {
-    return {false, {}, "empty kernel parameter"};
+    return {DiagnosticCode::kEmptyKernelParameter, {}};
   }
 
   std::size_t declaration_end = normalized.size();
@@ -253,44 +294,45 @@ ParsedParameter ParseParameter(std::string_view text, std::size_t index) {
     --name_start;
   }
   if (name_start == name_end) {
-    return {false, {}, "missing kernel parameter name"};
+    return {DiagnosticCode::kMissingParameterName, {}};
   }
 
   KernelParameter parameter;
   parameter.name = declaration.substr(name_start, name_end - name_start);
   parameter.buffer_index = index;
 
-  std::string type = declaration.substr(0, name_start);
-  parameter.is_pointer = type.find('*') != std::string::npos;
-  parameter.is_const = type.find("const") != std::string::npos;
-  type.erase(std::remove(type.begin(), type.end(), '*'), type.end());
-  RemoveIdentifier(type, "const");
-  RemoveIdentifier(type, "volatile");
-  RemoveIdentifier(type, "__restrict__");
-  RemoveIdentifier(type, "__restrict");
-  RemoveIdentifier(type, "restrict");
+  std::string type_spelling = declaration.substr(0, name_start);
+  const bool is_pointer = type_spelling.find('*') != std::string::npos;
+  const bool is_const = type_spelling.find("const") != std::string::npos;
 
-  parameter.cuda_type = NormalizeSpace(type);
-  parameter.metal_type = MapType(parameter.cuda_type);
-  if (parameter.metal_type.empty()) {
-    return {false, {}, "unsupported kernel parameter type: " + parameter.cuda_type};
+  parameter.binding_kind =
+      is_pointer ? ParameterBindingKind::kBufferPointer : ParameterBindingKind::kConstantValue;
+  parameter.address_space = is_pointer ? AddressSpace::kDevice : AddressSpace::kConstant;
+  parameter.access =
+      (!is_pointer || is_const) ? AccessQualifier::kReadOnly : AccessQualifier::kReadWrite;
+
+  type_spelling.erase(std::remove(type_spelling.begin(), type_spelling.end(), '*'),
+                      type_spelling.end());
+  RemoveIdentifier(type_spelling, "const");
+  RemoveIdentifier(type_spelling, "volatile");
+  RemoveIdentifier(type_spelling, "__restrict__");
+  RemoveIdentifier(type_spelling, "__restrict");
+  RemoveIdentifier(type_spelling, "restrict");
+
+  const std::optional<DataType> resolved_type = ResolveCudaType(NormalizeSpace(type_spelling));
+  if (!resolved_type.has_value()) {
+    return {DiagnosticCode::kUnsupportedParameterType, {}};
   }
+  parameter.type = *resolved_type;
 
-  return {true, std::move(parameter), {}};
+  return {DiagnosticCode::kOk, std::move(parameter)};
 }
 
-std::string_view BuiltinReplacement(std::string_view word) {
-  if (word == "blockIdx") {
-    return "threadgroup_position_in_grid";
-  }
-  if (word == "blockDim") {
-    return "threads_per_threadgroup";
-  }
-  if (word == "threadIdx") {
-    return "thread_position_in_threadgroup";
-  }
-  if (word == "gridDim") {
-    return "threadgroups_per_grid";
+std::string_view BuiltinReplacement(std::string_view word) noexcept {
+  for (const BuiltinMappingEntry& entry : kBuiltinTable) {
+    if (entry.cuda_name == word) {
+      return entry.msl_name;
+    }
   }
   return {};
 }
@@ -348,34 +390,33 @@ std::string TranslateBuiltins(std::string_view body) {
   return result;
 }
 
-TranslationResult Failure(std::string message) {
+TranslationResult Failure(DiagnosticCode code) noexcept {
   TranslationResult result;
-  result.ok = false;
-  result.error = std::move(message);
+  result.code = code;
   return result;
 }
 
-}
+}  // namespace
 
 TranslationResult TranslateCudaToMsl(std::string_view source) {
   constexpr std::string_view kMarker = "__global__";
   const std::size_t marker_position = source.find(kMarker);
   if (marker_position == std::string_view::npos) {
-    return Failure("no __global__ kernel found");
+    return Failure(DiagnosticCode::kMissingGlobalKernel);
   }
   if (source.find(kMarker, marker_position + kMarker.size()) != std::string_view::npos) {
-    return Failure("only one kernel is supported");
+    return Failure(DiagnosticCode::kMultipleKernelsUnsupported);
   }
 
   const std::size_t open = source.find('(', marker_position + kMarker.size());
   const std::size_t semicolon = source.find(';', marker_position + kMarker.size());
   if (open == std::string_view::npos || (semicolon != std::string_view::npos && semicolon < open)) {
-    return Failure("malformed kernel declaration");
+    return Failure(DiagnosticCode::kMalformedKernelDeclaration);
   }
 
   const std::size_t close = FindMatching(source, open, '(', ')');
   if (close == std::string_view::npos) {
-    return Failure("unterminated kernel parameter list");
+    return Failure(DiagnosticCode::kUnterminatedParameterList);
   }
 
   std::size_t name_end = open;
@@ -387,14 +428,14 @@ TranslationResult TranslateCudaToMsl(std::string_view source) {
     --name_start;
   }
   if (name_start == name_end) {
-    return Failure("missing kernel name");
+    return Failure(DiagnosticCode::kMissingKernelName);
   }
 
   const std::string name(source.substr(name_start, name_end - name_start));
   const std::string return_type = NormalizeSpace(source.substr(
       marker_position + kMarker.size(), name_start - (marker_position + kMarker.size())));
   if (return_type != "void") {
-    return Failure("kernel return type must be void");
+    return Failure(DiagnosticCode::kNonVoidKernelReturn);
   }
 
   std::size_t body_open = close + 1;
@@ -402,24 +443,18 @@ TranslationResult TranslateCudaToMsl(std::string_view source) {
     ++body_open;
   }
   if (body_open >= source.size() || source[body_open] != '{') {
-    return Failure("missing kernel body");
+    return Failure(DiagnosticCode::kMissingKernelBody);
   }
 
   const std::size_t body_close = FindMatching(source, body_open, '{', '}');
   if (body_close == std::string_view::npos) {
-    return Failure("unterminated kernel body");
+    return Failure(DiagnosticCode::kUnterminatedKernelBody);
   }
 
   const std::string_view body = source.substr(body_open + 1, body_close - body_open - 1);
-  const std::string_view unsupported[] = {
-      "__shared__", "__device__",  "__constant__",   "__managed__",      "cooperative_groups",
-      "atomicAdd",  "atomicSub",   "atomicCAS",      "atomicExch",       "atomicMin",
-      "atomicMax",  "atomicInc",   "atomicDec",      "atomicAnd",        "atomicOr",
-      "atomicXor",  "__shfl_sync", "__shfl_up_sync", "__shfl_down_sync", "printf",
-  };
-  for (const std::string_view token : unsupported) {
+  for (const std::string_view token : kUnsupportedConstructs) {
     if (body.find(token) != std::string_view::npos) {
-      return Failure("unsupported kernel construct: " + std::string(token));
+      return Failure(DiagnosticCode::kUnsupportedConstruct);
     }
   }
 
@@ -430,13 +465,14 @@ TranslationResult TranslateCudaToMsl(std::string_view source) {
       SplitParameters(source.substr(open + 1, close - open - 1));
   for (std::size_t index = 0; index < parameters.size(); ++index) {
     ParsedParameter parsed = ParseParameter(parameters[index], index);
-    if (!parsed.ok) {
-      return Failure(std::move(parsed.error));
+    if (parsed.code != DiagnosticCode::kOk) {
+      return Failure(parsed.code);
     }
     kernel.parameters.push_back(std::move(parsed.parameter));
   }
 
   std::string msl;
+  msl.reserve(body.size() + 512);
   msl += "#include <metal_stdlib>\n";
   msl += "using namespace metal;\n\n";
   msl += "kernel void ";
@@ -445,16 +481,16 @@ TranslationResult TranslateCudaToMsl(std::string_view source) {
 
   for (const KernelParameter& parameter : kernel.parameters) {
     msl += "    ";
-    if (parameter.is_pointer) {
-      msl += "device ";
-      if (parameter.is_const) {
+    msl += AddressSpaceName(parameter.address_space);
+    msl.push_back(' ');
+    if (parameter.is_pointer()) {
+      if (parameter.is_const()) {
         msl += "const ";
       }
-      msl += parameter.metal_type;
+      msl += parameter.metal_type();
       msl += "* ";
     } else {
-      msl += "constant ";
-      msl += parameter.metal_type;
+      msl += parameter.metal_type();
       msl += "& ";
     }
     msl += parameter.name;
@@ -475,9 +511,9 @@ TranslationResult TranslateCudaToMsl(std::string_view source) {
   kernel.msl = std::move(msl);
 
   TranslationResult result;
-  result.ok = true;
+  result.code = DiagnosticCode::kOk;
   result.kernel = std::move(kernel);
   return result;
 }
 
-}
+}  // namespace muda::compiler

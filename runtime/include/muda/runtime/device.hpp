@@ -9,13 +9,26 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace muda::runtime {
 
+enum class BackendKind : std::uint8_t {
+  kMetal,
+};
+
+[[nodiscard]] constexpr std::string_view BackendName(BackendKind kind) noexcept {
+  switch (kind) {
+    case BackendKind::kMetal:
+      return "metal";
+  }
+  return "unknown";
+}
+
 struct DeviceInfo {
   std::string name;
-  std::string backend;
+  BackendKind backend = BackendKind::kMetal;
   std::uint64_t recommended_working_set_bytes = 0;
   std::uint32_t max_threads_per_threadgroup = 0;
 };
@@ -47,4 +60,4 @@ class Device {
 
 [[nodiscard]] std::vector<DeviceInfo> EnumerateDevices();
 
-}
+}  // namespace muda::runtime

@@ -1,9 +1,12 @@
 add_library(
   muda_runtime
+  src/allocation_table.mm
   src/buffer.mm
   src/cuda_runtime.mm
   src/device.mm
+  src/error_state.cpp
   src/kernel.mm
+  src/kernel_registry.mm
 )
 add_library(muda::runtime ALIAS muda_runtime)
 
