@@ -52,4 +52,3 @@ const RegisteredKernel* KernelRegistry::Find(const void* host_func) const noexce
 void KernelRegistry::Clear() { kernels_.clear(); }
 
 }  // namespace muda::runtime::cudart
-

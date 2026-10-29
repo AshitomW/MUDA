@@ -22,7 +22,7 @@ struct TypeMappingEntry {
   DataType type;
 };
 
-constexpr std::array<TypeMappingEntry, 33> kTypeTable = {{
+constexpr std::array<TypeMappingEntry, 37> kTypeTable = {{
     {"bool", {ScalarType::kBool, VectorWidth::k1}},
     {"char", {ScalarType::kInt8, VectorWidth::k1}},
     {"signed char", {ScalarType::kInt8, VectorWidth::k1}},
@@ -49,6 +49,9 @@ constexpr std::array<TypeMappingEntry, 33> kTypeTable = {{
     {"ulong", {ScalarType::kUInt64, VectorWidth::k1}},
     {"unsigned long", {ScalarType::kUInt64, VectorWidth::k1}},
     {"unsigned long long", {ScalarType::kUInt64, VectorWidth::k1}},
+    {"ulong2", {ScalarType::kUInt64, VectorWidth::k2}},
+    {"ulong3", {ScalarType::kUInt64, VectorWidth::k3}},
+    {"ulong4", {ScalarType::kUInt64, VectorWidth::k4}},
     {"half", {ScalarType::kFloat16, VectorWidth::k1}},
     {"half2", {ScalarType::kFloat16, VectorWidth::k2}},
     {"half3", {ScalarType::kFloat16, VectorWidth::k3}},
@@ -56,6 +59,7 @@ constexpr std::array<TypeMappingEntry, 33> kTypeTable = {{
     {"float", {ScalarType::kFloat32, VectorWidth::k1}},
     {"float2", {ScalarType::kFloat32, VectorWidth::k2}},
     {"float3", {ScalarType::kFloat32, VectorWidth::k3}},
+    {"float4", {ScalarType::kFloat32, VectorWidth::k4}},
 }};
 
 struct BuiltinMappingEntry {
@@ -253,9 +257,6 @@ void RemoveIdentifier(std::string& text, std::string_view identifier) {
 }
 
 std::optional<DataType> ResolveCudaType(std::string_view spelling) noexcept {
-  if (spelling == "float4") {
-    return DataType{ScalarType::kFloat32, VectorWidth::k4};
-  }
   for (const TypeMappingEntry& entry : kTypeTable) {
     if (entry.cuda_spelling == spelling) {
       return entry.type;
@@ -396,27 +397,33 @@ TranslationResult Failure(DiagnosticCode code) noexcept {
   return result;
 }
 
-}  // namespace
+struct KernelSlice {
+  DiagnosticCode code = DiagnosticCode::kOk;
+  std::string name;
+  std::string_view parameter_list;
+  std::string_view body;
+};
 
-TranslationResult TranslateCudaToMsl(std::string_view source) {
+KernelSlice LocateKernelSlice(std::string_view source) {
   constexpr std::string_view kMarker = "__global__";
   const std::size_t marker_position = source.find(kMarker);
   if (marker_position == std::string_view::npos) {
-    return Failure(DiagnosticCode::kMissingGlobalKernel);
+    return {DiagnosticCode::kMissingGlobalKernel, {}, {}, {}};
   }
-  if (source.find(kMarker, marker_position + kMarker.size()) != std::string_view::npos) {
-    return Failure(DiagnosticCode::kMultipleKernelsUnsupported);
+  const std::size_t after_marker = marker_position + kMarker.size();
+  if (source.find(kMarker, after_marker) != std::string_view::npos) {
+    return {DiagnosticCode::kMultipleKernelsUnsupported, {}, {}, {}};
   }
 
-  const std::size_t open = source.find('(', marker_position + kMarker.size());
-  const std::size_t semicolon = source.find(';', marker_position + kMarker.size());
+  const std::size_t open = source.find('(', after_marker);
+  const std::size_t semicolon = source.find(';', after_marker);
   if (open == std::string_view::npos || (semicolon != std::string_view::npos && semicolon < open)) {
-    return Failure(DiagnosticCode::kMalformedKernelDeclaration);
+    return {DiagnosticCode::kMalformedKernelDeclaration, {}, {}, {}};
   }
 
   const std::size_t close = FindMatching(source, open, '(', ')');
   if (close == std::string_view::npos) {
-    return Failure(DiagnosticCode::kUnterminatedParameterList);
+    return {DiagnosticCode::kUnterminatedParameterList, {}, {}, {}};
   }
 
   std::size_t name_end = open;
@@ -428,14 +435,13 @@ TranslationResult TranslateCudaToMsl(std::string_view source) {
     --name_start;
   }
   if (name_start == name_end) {
-    return Failure(DiagnosticCode::kMissingKernelName);
+    return {DiagnosticCode::kMissingKernelName, {}, {}, {}};
   }
 
-  const std::string name(source.substr(name_start, name_end - name_start));
-  const std::string return_type = NormalizeSpace(source.substr(
-      marker_position + kMarker.size(), name_start - (marker_position + kMarker.size())));
+  const std::string return_type =
+      NormalizeSpace(source.substr(after_marker, name_start - after_marker));
   if (return_type != "void") {
-    return Failure(DiagnosticCode::kNonVoidKernelReturn);
+    return {DiagnosticCode::kNonVoidKernelReturn, {}, {}, {}};
   }
 
   std::size_t body_open = close + 1;
@@ -443,34 +449,46 @@ TranslationResult TranslateCudaToMsl(std::string_view source) {
     ++body_open;
   }
   if (body_open >= source.size() || source[body_open] != '{') {
-    return Failure(DiagnosticCode::kMissingKernelBody);
+    return {DiagnosticCode::kMissingKernelBody, {}, {}, {}};
   }
 
   const std::size_t body_close = FindMatching(source, body_open, '{', '}');
   if (body_close == std::string_view::npos) {
-    return Failure(DiagnosticCode::kUnterminatedKernelBody);
+    return {DiagnosticCode::kUnterminatedKernelBody, {}, {}, {}};
   }
 
-  const std::string_view body = source.substr(body_open + 1, body_close - body_open - 1);
+  return {
+      DiagnosticCode::kOk,
+      std::string(source.substr(name_start, name_end - name_start)),
+      source.substr(open + 1, close - open - 1),
+      source.substr(body_open + 1, body_close - body_open - 1),
+  };
+}
+
+DiagnosticCode ValidateKernelBody(std::string_view body) noexcept {
   for (const std::string_view token : kUnsupportedConstructs) {
     if (body.find(token) != std::string_view::npos) {
-      return Failure(DiagnosticCode::kUnsupportedConstruct);
+      return DiagnosticCode::kUnsupportedConstruct;
     }
   }
+  return DiagnosticCode::kOk;
+}
 
-  TranslatedKernel kernel;
-  kernel.name = name;
-
-  const std::vector<std::string_view> parameters =
-      SplitParameters(source.substr(open + 1, close - open - 1));
+DiagnosticCode ParseParameterList(std::string_view parameter_list,
+                                  std::vector<KernelParameter>* out_parameters) {
+  const std::vector<std::string_view> parameters = SplitParameters(parameter_list);
+  out_parameters->reserve(parameters.size());
   for (std::size_t index = 0; index < parameters.size(); ++index) {
     ParsedParameter parsed = ParseParameter(parameters[index], index);
     if (parsed.code != DiagnosticCode::kOk) {
-      return Failure(parsed.code);
+      return parsed.code;
     }
-    kernel.parameters.push_back(std::move(parsed.parameter));
+    out_parameters->push_back(std::move(parsed.parameter));
   }
+  return DiagnosticCode::kOk;
+}
 
+std::string EmitKernelMsl(const TranslatedKernel& kernel, std::string_view body) {
   std::string msl;
   msl.reserve(body.size() + 512);
   msl += "#include <metal_stdlib>\n";
@@ -507,8 +525,31 @@ TranslationResult TranslateCudaToMsl(std::string_view source) {
   msl += "  ";
   msl += TranslateBuiltins(Trim(body));
   msl += "\n}\n";
+  return msl;
+}
 
-  kernel.msl = std::move(msl);
+}  // namespace
+
+TranslationResult TranslateCudaToMsl(std::string_view source) {
+  KernelSlice slice = LocateKernelSlice(source);
+  if (slice.code != DiagnosticCode::kOk) {
+    return Failure(slice.code);
+  }
+
+  const DiagnosticCode body_status = ValidateKernelBody(slice.body);
+  if (body_status != DiagnosticCode::kOk) {
+    return Failure(body_status);
+  }
+
+  TranslatedKernel kernel;
+  kernel.name = std::move(slice.name);
+
+  const DiagnosticCode param_status = ParseParameterList(slice.parameter_list, &kernel.parameters);
+  if (param_status != DiagnosticCode::kOk) {
+    return Failure(param_status);
+  }
+
+  kernel.msl = EmitKernelMsl(kernel, slice.body);
 
   TranslationResult result;
   result.code = DiagnosticCode::kOk;

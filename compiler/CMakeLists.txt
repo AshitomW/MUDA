@@ -16,7 +16,7 @@ target_include_directories(
 )
 
 target_compile_features(muda_compiler PUBLIC cxx_std_20)
-target_compile_options(muda_compiler PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(muda_compiler PRIVATE muda_warnings)
 
 install(TARGETS muda_compiler ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
 install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})

@@ -27,4 +27,4 @@ struct KernelStorage {
   id<MTLCommandQueue> queue = nil;
 };
 
-}
+}  // namespace muda::runtime

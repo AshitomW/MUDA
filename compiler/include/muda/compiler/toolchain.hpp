@@ -9,4 +9,4 @@ namespace muda::compiler {
 
 [[nodiscard]] bool MetalToolchainAvailable();
 
-}
+}  // namespace muda::compiler

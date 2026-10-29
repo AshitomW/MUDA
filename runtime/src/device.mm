@@ -11,6 +11,7 @@
 #include <stdexcept>
 #include <utility>
 
+#include "metal_bridge.hpp"
 #include "muda/runtime/buffer.hpp"
 #include "storage.hpp"
 
@@ -19,8 +20,7 @@ namespace {
 
 DeviceInfo MakeInfo(id<MTLDevice> device) {
   DeviceInfo info;
-  const char* name = device.name.UTF8String;
-  info.name = name != nullptr ? name : "";
+  info.name = bridge::ToStdString(device.name);
   info.backend = BackendKind::kMetal;
   info.recommended_working_set_bytes =
       static_cast<std::uint64_t>(device.recommendedMaxWorkingSetSize);
@@ -36,7 +36,7 @@ Device::~Device() = default;
 Device::Device(Device&&) noexcept = default;
 Device& Device::operator=(Device&&) noexcept = default;
 
-Device::Device(std::shared_ptr<DeviceStorage> storage) : storage_(std::move(storage)) {}
+Device::Device(std::unique_ptr<DeviceStorage> storage) : storage_(std::move(storage)) {}
 
 Device Device::Default() {
   @autoreleasepool {
@@ -44,13 +44,13 @@ Device Device::Default() {
     if (device == nil) {
       throw std::runtime_error("no Metal device available");
     }
-    auto storage = std::make_shared<DeviceStorage>();
+    auto storage = std::make_unique<DeviceStorage>();
     storage->device = device;
     return Device(std::move(storage));
   }
 }
 
-bool Device::valid() const { return storage_ != nullptr && storage_->device != nil; }
+bool Device::valid() const noexcept { return storage_ != nullptr && storage_->device != nil; }
 
 DeviceInfo Device::info() const {
   if (!valid()) {
@@ -74,7 +74,7 @@ Buffer Device::Allocate(std::size_t bytes) const {
     if (buffer == nil) {
       throw std::runtime_error("Metal buffer allocation failed");
     }
-    auto storage = std::make_shared<BufferStorage>();
+    auto storage = std::make_unique<BufferStorage>();
     storage->buffer = buffer;
     storage->size = bytes;
     return Buffer(std::move(storage));
@@ -85,6 +85,7 @@ std::vector<DeviceInfo> EnumerateDevices() {
   std::vector<DeviceInfo> result;
   @autoreleasepool {
     NSArray<id<MTLDevice>>* devices = MTLCopyAllDevices();
+    result.reserve(devices.count);
     for (id<MTLDevice> device in devices) {
       result.push_back(MakeInfo(device));
     }

@@ -24,13 +24,14 @@
 #include "allocation_table.hpp"
 #include "error_state.hpp"
 #include "kernel_registry.hpp"
+#include "metal_bridge.hpp"
 
 namespace muda::runtime::cudart {
 namespace {
 
 constexpr std::size_t kMinAlignment = 256;
 
-std::size_t AlignUp(std::size_t value, std::size_t alignment) noexcept {
+[[nodiscard]] constexpr std::size_t AlignUp(std::size_t value, std::size_t alignment) noexcept {
   const std::size_t remainder = value % alignment;
   if (remainder == 0) {
     return value;
@@ -39,6 +40,12 @@ std::size_t AlignUp(std::size_t value, std::size_t alignment) noexcept {
     return value;
   }
   return value + (alignment - remainder);
+}
+
+[[nodiscard]] constexpr bool IsValidMemcpyKind(cudaMemcpyKind kind) noexcept {
+  return kind == cudaMemcpyHostToHost || kind == cudaMemcpyHostToDevice ||
+         kind == cudaMemcpyDeviceToHost || kind == cudaMemcpyDeviceToDevice ||
+         kind == cudaMemcpyDefault;
 }
 
 void WaitForQueue(id<MTLCommandQueue> queue) noexcept {
@@ -64,6 +71,8 @@ struct BoundArgument {
 
 class RuntimeContext {
  public:
+  // Intentionally placement-constructed without static destruction so Objective-C
+  // Metal objects are never released during C++ static teardown (DESIGN-AND-CODE-STANDARDS §10).
   static RuntimeContext& Instance() noexcept {
     static std::once_flag init_flag;
     alignas(RuntimeContext) static std::byte storage[sizeof(RuntimeContext)];
@@ -170,13 +179,9 @@ class RuntimeContext {
     }
 
     id<MTLDevice> device = nil;
-    {
-      std::unique_lock<std::shared_mutex> lock(mutex_);
-      const cudaError_t status = EnsureInitializedLocked();
-      if (status != cudaSuccess) {
-        return status;
-      }
-      device = device_;
+    const cudaError_t status = AcquireInitializedDevice(&device);
+    if (status != cudaSuccess) {
+      return status;
     }
 
     @autoreleasepool {
@@ -194,13 +199,13 @@ class RuntimeContext {
       void* contents = buffer.contents;
 
       std::unique_lock<std::shared_mutex> lock(mutex_);
-      AllocationRecord record;
-      record.base_address = DeviceAddress::FromPointer(contents);
-      record.size = size;
-      record.capacity = aligned_size;
-      record.attach_mode = *attach_mode;
-      record.buffer = buffer;
-      allocations_.Insert(std::move(record));
+      allocations_.Insert(AllocationRecord{
+          .base_address = DeviceAddress::FromPointer(contents),
+          .size = size,
+          .capacity = aligned_size,
+          .attach_mode = *attach_mode,
+          .buffer = buffer,
+      });
 
       *dev_ptr = contents;
       return cudaSuccess;
@@ -235,65 +240,21 @@ class RuntimeContext {
     if (dst == nullptr || src == nullptr) {
       return RecordError(cudaErrorInvalidValue);
     }
-    if (kind != cudaMemcpyHostToHost && kind != cudaMemcpyHostToDevice &&
-        kind != cudaMemcpyDeviceToHost && kind != cudaMemcpyDeviceToDevice &&
-        kind != cudaMemcpyDefault) {
+    if (!IsValidMemcpyKind(kind)) {
       return RecordError(cudaErrorInvalidMemcpyDirection);
     }
 
     const DeviceAddress dst_addr = DeviceAddress::FromPointer(dst);
     const DeviceAddress src_addr = DeviceAddress::FromPointer(src);
 
-    const auto validate_copy_locked = [&]() noexcept -> cudaError_t {
-      const AllocationRecord* dst_record = allocations_.FindContaining(dst_addr);
-      const AllocationRecord* src_record = allocations_.FindContaining(src_addr);
-
-      const bool dst_valid_device = AllocationTable::IsRangeValid(dst_record, dst_addr, count);
-      const bool src_valid_device = AllocationTable::IsRangeValid(src_record, src_addr, count);
-
-      switch (kind) {
-        case cudaMemcpyHostToHost:
-          if (dst_record != nullptr || src_record != nullptr) {
-            return RecordError(cudaErrorInvalidValue);
-          }
-          break;
-        case cudaMemcpyHostToDevice:
-          if (!dst_valid_device || src_record != nullptr) {
-            return RecordError(cudaErrorInvalidValue);
-          }
-          break;
-        case cudaMemcpyDeviceToHost:
-          if (!src_valid_device || dst_record != nullptr) {
-            return RecordError(cudaErrorInvalidValue);
-          }
-          break;
-        case cudaMemcpyDeviceToDevice:
-          if (!dst_valid_device || !src_valid_device) {
-            return RecordError(cudaErrorInvalidValue);
-          }
-          break;
-        case cudaMemcpyDefault:
-          if (dst_record != nullptr && !dst_valid_device) {
-            return RecordError(cudaErrorInvalidValue);
-          }
-          if (src_record != nullptr && !src_valid_device) {
-            return RecordError(cudaErrorInvalidValue);
-          }
-          break;
-      }
-      return cudaSuccess;
-    };
-
     bool touches_device = false;
     {
       std::shared_lock<std::shared_mutex> lock(mutex_);
-      const AllocationRecord* dst_record = allocations_.FindContaining(dst_addr);
-      const AllocationRecord* src_record = allocations_.FindContaining(src_addr);
-      const cudaError_t validation_status = validate_copy_locked();
+      const cudaError_t validation_status =
+          ValidateCopyLocked(dst_addr, src_addr, count, kind, &touches_device);
       if (validation_status != cudaSuccess) {
         return validation_status;
       }
-      touches_device = (dst_record != nullptr || src_record != nullptr);
     }
 
     if (touches_device) {
@@ -304,7 +265,8 @@ class RuntimeContext {
     }
 
     std::shared_lock<std::shared_mutex> lock(mutex_);
-    const cudaError_t validation_status = validate_copy_locked();
+    const cudaError_t validation_status =
+        ValidateCopyLocked(dst_addr, src_addr, count, kind, nullptr);
     if (validation_status != cudaSuccess) {
       return validation_status;
     }
@@ -349,17 +311,13 @@ class RuntimeContext {
     }
 
     id<MTLDevice> device = nil;
-    {
-      std::unique_lock<std::shared_mutex> lock(mutex_);
-      const cudaError_t status = EnsureInitializedLocked();
-      if (status != cudaSuccess) {
-        return status;
-      }
-      device = device_;
+    const cudaError_t status = AcquireInitializedDevice(&device);
+    if (status != cudaSuccess) {
+      return status;
     }
 
     @autoreleasepool {
-      NSString* path_str = [NSString stringWithUTF8String:metallib_path];
+      NSString* path_str = bridge::ToNSString(metallib_path);
       if (path_str == nil) {
         return RecordError(cudaErrorInvalidValue);
       }
@@ -383,13 +341,9 @@ class RuntimeContext {
     }
 
     id<MTLDevice> device = nil;
-    {
-      std::unique_lock<std::shared_mutex> lock(mutex_);
-      const cudaError_t status = EnsureInitializedLocked();
-      if (status != cudaSuccess) {
-        return status;
-      }
-      device = device_;
+    const cudaError_t status = AcquireInitializedDevice(&device);
+    if (status != cudaSuccess) {
+      return status;
     }
 
     @autoreleasepool {
@@ -436,95 +390,33 @@ class RuntimeContext {
         return RecordError(cudaErrorInvalidDeviceFunction);
       }
 
-      const MTLSize max_threads = device_.maxThreadsPerThreadgroup;
-      if (block_dim.x > max_threads.width || block_dim.y > max_threads.height ||
-          block_dim.z > max_threads.depth) {
-        return RecordError(cudaErrorInvalidConfiguration);
+      const cudaError_t config_status = ValidateLaunchConfig(*kernel, block_dim, shared_mem);
+      if (config_status != cudaSuccess) {
+        return config_status;
       }
 
-      const std::uint64_t total_block_threads = static_cast<std::uint64_t>(block_dim.x) *
-                                                static_cast<std::uint64_t>(block_dim.y) *
-                                                static_cast<std::uint64_t>(block_dim.z);
-      if (total_block_threads > kernel->pipeline.maxTotalThreadsPerThreadgroup) {
-        return RecordError(cudaErrorInvalidConfiguration);
+      std::vector<BoundArgument> bound_args;
+      const cudaError_t bind_status = BindLaunchArguments(*kernel, args, &bound_args);
+      if (bind_status != cudaSuccess) {
+        return bind_status;
       }
 
-      if (shared_mem > device_.maxThreadgroupMemoryLength) {
-        return RecordError(cudaErrorInvalidConfiguration);
-      }
-
-      const std::size_t param_count = kernel->params.size();
-      if (param_count > 0 && args == nullptr) {
-        return RecordError(cudaErrorInvalidValue);
-      }
-
-      std::vector<BoundArgument> bound_args(param_count);
-      for (std::size_t index = 0; index < param_count; ++index) {
-        if (args[index] == nullptr) {
-          return RecordError(cudaErrorInvalidValue);
-        }
-        const mudaKernelParamDesc& desc = kernel->params[index];
-        BoundArgument& bound = bound_args[index];
-        bound.kind = desc.kind;
-
-        if (desc.kind == mudaKernelParamBuffer) {
-          const void* dev_ptr = nullptr;
-          std::memcpy(&dev_ptr, args[index], sizeof(void*));
-          if (dev_ptr == nullptr) {
-            return RecordError(cudaErrorInvalidValue);
-          }
-          const DeviceAddress addr = DeviceAddress::FromPointer(dev_ptr);
-          const AllocationRecord* record = allocations_.FindContaining(addr);
-          if (!AllocationTable::IsOffsetValid(record, addr)) {
-            return RecordError(cudaErrorInvalidValue);
-          }
-          bound.buffer = record->buffer;
-          bound.offset = static_cast<std::size_t>(addr.value - record->base_address.value);
-        } else {
-          bound.bytes = args[index];
-          bound.size = desc.size;
-        }
-      }
-
-      id<MTLCommandBuffer> command_buffer = [queue_ commandBuffer];
-      id<MTLComputeCommandEncoder> encoder = [command_buffer computeCommandEncoder];
-      if (command_buffer == nil || encoder == nil) {
-        return RecordError(cudaErrorLaunchFailure);
-      }
-
-      [encoder setComputePipelineState:kernel->pipeline];
-      for (std::size_t index = 0; index < param_count; ++index) {
-        const BoundArgument& bound = bound_args[index];
-        if (bound.kind == mudaKernelParamBuffer) {
-          [encoder setBuffer:bound.buffer offset:bound.offset atIndex:index];
-        } else {
-          [encoder setBytes:bound.bytes length:bound.size atIndex:index];
-        }
-      }
-
-      if (shared_mem > 0) {
-        [encoder setThreadgroupMemoryLength:shared_mem atIndex:0];
-      }
-
-      [encoder dispatchThreadgroups:MTLSizeMake(grid_dim.x, grid_dim.y, grid_dim.z)
-              threadsPerThreadgroup:MTLSizeMake(block_dim.x, block_dim.y, block_dim.z)];
-      [encoder endEncoding];
-
-      std::atomic<cudaError_t>* async_error_ptr = &async_error_;
-      [command_buffer addCompletedHandler:^(id<MTLCommandBuffer> completed_buffer) {
-        if (completed_buffer.error != nil) {
-          cudaError_t expected = cudaSuccess;
-          async_error_ptr->compare_exchange_strong(expected, cudaErrorLaunchFailure,
-                                                   std::memory_order_acq_rel);
-        }
-      }];
-      [command_buffer commit];
-      return cudaSuccess;
+      return EncodeAndCommitLaunch(*kernel, bound_args, grid_dim, block_dim, shared_mem);
     }
   }
 
  private:
   RuntimeContext() = default;
+
+  cudaError_t AcquireInitializedDevice(id<MTLDevice>* out_device) {
+    std::unique_lock<std::shared_mutex> lock(mutex_);
+    const cudaError_t status = EnsureInitializedLocked();
+    if (status != cudaSuccess) {
+      return status;
+    }
+    *out_device = device_;
+    return cudaSuccess;
+  }
 
   cudaError_t EnsureInitializedLocked() {
     if (device_ != nil && queue_ != nil) {
@@ -545,10 +437,150 @@ class RuntimeContext {
     }
   }
 
+  cudaError_t ValidateCopyLocked(DeviceAddress dst_addr, DeviceAddress src_addr, std::size_t count,
+                                 cudaMemcpyKind kind, bool* out_touches_device) const noexcept {
+    const AllocationRecord* dst_record = allocations_.FindContaining(dst_addr);
+    const AllocationRecord* src_record = allocations_.FindContaining(src_addr);
+
+    if (out_touches_device != nullptr) {
+      *out_touches_device = (dst_record != nullptr || src_record != nullptr);
+    }
+
+    const bool dst_valid_device = AllocationTable::IsRangeValid(dst_record, dst_addr, count);
+    const bool src_valid_device = AllocationTable::IsRangeValid(src_record, src_addr, count);
+
+    switch (kind) {
+      case cudaMemcpyHostToHost:
+        if (dst_record != nullptr || src_record != nullptr) {
+          return RecordError(cudaErrorInvalidValue);
+        }
+        break;
+      case cudaMemcpyHostToDevice:
+        if (!dst_valid_device || src_record != nullptr) {
+          return RecordError(cudaErrorInvalidValue);
+        }
+        break;
+      case cudaMemcpyDeviceToHost:
+        if (!src_valid_device || dst_record != nullptr) {
+          return RecordError(cudaErrorInvalidValue);
+        }
+        break;
+      case cudaMemcpyDeviceToDevice:
+        if (!dst_valid_device || !src_valid_device) {
+          return RecordError(cudaErrorInvalidValue);
+        }
+        break;
+      case cudaMemcpyDefault:
+        if ((dst_record != nullptr && !dst_valid_device) ||
+            (src_record != nullptr && !src_valid_device)) {
+          return RecordError(cudaErrorInvalidValue);
+        }
+        break;
+    }
+    return cudaSuccess;
+  }
+
+  cudaError_t ValidateLaunchConfig(const RegisteredKernel& kernel, dim3 block_dim,
+                                   std::size_t shared_mem) const noexcept {
+    const MTLSize max_threads = device_.maxThreadsPerThreadgroup;
+    if (block_dim.x > max_threads.width || block_dim.y > max_threads.height ||
+        block_dim.z > max_threads.depth) {
+      return RecordError(cudaErrorInvalidConfiguration);
+    }
+
+    const std::uint64_t total_block_threads = static_cast<std::uint64_t>(block_dim.x) *
+                                              static_cast<std::uint64_t>(block_dim.y) *
+                                              static_cast<std::uint64_t>(block_dim.z);
+    if (total_block_threads > kernel.pipeline.maxTotalThreadsPerThreadgroup) {
+      return RecordError(cudaErrorInvalidConfiguration);
+    }
+
+    if (shared_mem > device_.maxThreadgroupMemoryLength) {
+      return RecordError(cudaErrorInvalidConfiguration);
+    }
+    return cudaSuccess;
+  }
+
+  cudaError_t BindLaunchArguments(const RegisteredKernel& kernel, void** args,
+                                  std::vector<BoundArgument>* out_bound) const {
+    const std::size_t param_count = kernel.params.size();
+    if (param_count > 0 && args == nullptr) {
+      return RecordError(cudaErrorInvalidValue);
+    }
+
+    out_bound->resize(param_count);
+    for (std::size_t index = 0; index < param_count; ++index) {
+      if (args[index] == nullptr) {
+        return RecordError(cudaErrorInvalidValue);
+      }
+      const mudaKernelParamDesc& desc = kernel.params[index];
+      BoundArgument& bound = (*out_bound)[index];
+      bound.kind = desc.kind;
+
+      if (desc.kind == mudaKernelParamBuffer) {
+        const void* dev_ptr = nullptr;
+        std::memcpy(&dev_ptr, args[index], sizeof(void*));
+        if (dev_ptr == nullptr) {
+          return RecordError(cudaErrorInvalidValue);
+        }
+        const DeviceAddress addr = DeviceAddress::FromPointer(dev_ptr);
+        const AllocationRecord* record = allocations_.FindContaining(addr);
+        if (!AllocationTable::IsOffsetValid(record, addr)) {
+          return RecordError(cudaErrorInvalidValue);
+        }
+        bound.buffer = record->buffer;
+        bound.offset = static_cast<std::size_t>(addr.value - record->base_address.value);
+      } else {
+        bound.bytes = args[index];
+        bound.size = desc.size;
+      }
+    }
+    return cudaSuccess;
+  }
+
+  cudaError_t EncodeAndCommitLaunch(const RegisteredKernel& kernel,
+                                    std::span<const BoundArgument> bound_args, dim3 grid_dim,
+                                    dim3 block_dim, std::size_t shared_mem) {
+    id<MTLCommandBuffer> command_buffer = [queue_ commandBuffer];
+    id<MTLComputeCommandEncoder> encoder = [command_buffer computeCommandEncoder];
+    if (command_buffer == nil || encoder == nil) {
+      return RecordError(cudaErrorLaunchFailure);
+    }
+
+    [encoder setComputePipelineState:kernel.pipeline];
+    for (std::size_t index = 0; index < bound_args.size(); ++index) {
+      const BoundArgument& bound = bound_args[index];
+      if (bound.kind == mudaKernelParamBuffer) {
+        [encoder setBuffer:bound.buffer offset:bound.offset atIndex:index];
+      } else {
+        [encoder setBytes:bound.bytes length:bound.size atIndex:index];
+      }
+    }
+
+    if (shared_mem > 0) {
+      [encoder setThreadgroupMemoryLength:shared_mem atIndex:0];
+    }
+
+    [encoder dispatchThreadgroups:MTLSizeMake(grid_dim.x, grid_dim.y, grid_dim.z)
+            threadsPerThreadgroup:MTLSizeMake(block_dim.x, block_dim.y, block_dim.z)];
+    [encoder endEncoding];
+
+    std::atomic<cudaError_t>* async_error_ptr = &async_error_;
+    [command_buffer addCompletedHandler:^(id<MTLCommandBuffer> completed_buffer) {
+      if (completed_buffer.error != nil) {
+        cudaError_t expected = cudaSuccess;
+        async_error_ptr->compare_exchange_strong(expected, cudaErrorLaunchFailure,
+                                                 std::memory_order_acq_rel);
+      }
+    }];
+    [command_buffer commit];
+    return cudaSuccess;
+  }
+
   cudaError_t RegisterLibraryKernel(id<MTLDevice> device, id<MTLLibrary> library,
                                     const void* host_func, const char* kernel_name,
                                     const mudaKernelParamDesc* params, std::size_t param_count) {
-    NSString* fn_str = [NSString stringWithUTF8String:kernel_name];
+    NSString* fn_str = bridge::ToNSString(kernel_name);
     if (fn_str == nil) {
       return RecordError(cudaErrorInvalidValue);
     }
@@ -580,122 +612,99 @@ class RuntimeContext {
   std::atomic<cudaError_t> async_error_{cudaSuccess};
 };
 
+template <typename Fn>
+cudaError_t InvokeCAbi(Fn&& fn) noexcept {
+  @try {
+    return fn();
+  } @catch (...) {
+    return RecordError(cudaErrorInternalError);
+  }
+}
+
 }  // namespace
 }  // namespace muda::runtime::cudart
 
 extern "C" {
 
 cudaError_t cudaGetDeviceCount(int* count) {
-  @try {
-    return muda::runtime::cudart::RuntimeContext::Instance().GetDeviceCount(count);
-  } @catch (...) {
-    return muda::runtime::cudart::RecordError(cudaErrorInternalError);
-  }
+  return muda::runtime::cudart::InvokeCAbi(
+      [&] { return muda::runtime::cudart::RuntimeContext::Instance().GetDeviceCount(count); });
 }
 
 cudaError_t cudaSetDevice(int device) {
-  @try {
-    return muda::runtime::cudart::RuntimeContext::Instance().SetDevice(device);
-  } @catch (...) {
-    return muda::runtime::cudart::RecordError(cudaErrorInternalError);
-  }
+  return muda::runtime::cudart::InvokeCAbi(
+      [&] { return muda::runtime::cudart::RuntimeContext::Instance().SetDevice(device); });
 }
 
 cudaError_t cudaGetDevice(int* device) {
-  @try {
-    return muda::runtime::cudart::RuntimeContext::Instance().GetDevice(device);
-  } @catch (...) {
-    return muda::runtime::cudart::RecordError(cudaErrorInternalError);
-  }
+  return muda::runtime::cudart::InvokeCAbi(
+      [&] { return muda::runtime::cudart::RuntimeContext::Instance().GetDevice(device); });
 }
 
 cudaError_t cudaDeviceSynchronize(void) {
-  @try {
-    return muda::runtime::cudart::RuntimeContext::Instance().Synchronize();
-  } @catch (...) {
-    return muda::runtime::cudart::RecordError(cudaErrorInternalError);
-  }
+  return muda::runtime::cudart::InvokeCAbi(
+      [&] { return muda::runtime::cudart::RuntimeContext::Instance().Synchronize(); });
 }
 
 cudaError_t cudaDeviceReset(void) {
-  @try {
-    return muda::runtime::cudart::RuntimeContext::Instance().Reset();
-  } @catch (...) {
-    return muda::runtime::cudart::RecordError(cudaErrorInternalError);
-  }
+  return muda::runtime::cudart::InvokeCAbi(
+      [&] { return muda::runtime::cudart::RuntimeContext::Instance().Reset(); });
 }
 
 cudaError_t cudaMalloc(void** devPtr, size_t size) {
-  @try {
+  return muda::runtime::cudart::InvokeCAbi([&] {
     return muda::runtime::cudart::RuntimeContext::Instance().Allocate(devPtr, size,
                                                                       cudaMemAttachGlobal);
-  } @catch (...) {
-    return muda::runtime::cudart::RecordError(cudaErrorInternalError);
-  }
+  });
 }
 
 cudaError_t cudaMallocManaged(void** devPtr, size_t size, unsigned int flags) {
-  @try {
+  return muda::runtime::cudart::InvokeCAbi([&] {
     return muda::runtime::cudart::RuntimeContext::Instance().Allocate(devPtr, size, flags);
-  } @catch (...) {
-    return muda::runtime::cudart::RecordError(cudaErrorInternalError);
-  }
+  });
 }
 
 cudaError_t cudaFree(void* devPtr) {
-  @try {
-    return muda::runtime::cudart::RuntimeContext::Instance().Free(devPtr);
-  } @catch (...) {
-    return muda::runtime::cudart::RecordError(cudaErrorInternalError);
-  }
+  return muda::runtime::cudart::InvokeCAbi(
+      [&] { return muda::runtime::cudart::RuntimeContext::Instance().Free(devPtr); });
 }
 
 cudaError_t cudaMemcpy(void* dst, const void* src, size_t count, cudaMemcpyKind kind) {
-  @try {
+  return muda::runtime::cudart::InvokeCAbi([&] {
     return muda::runtime::cudart::RuntimeContext::Instance().Memcpy(dst, src, count, kind);
-  } @catch (...) {
-    return muda::runtime::cudart::RecordError(cudaErrorInternalError);
-  }
+  });
 }
 
 cudaError_t cudaMemset(void* devPtr, int value, size_t count) {
-  @try {
+  return muda::runtime::cudart::InvokeCAbi([&] {
     return muda::runtime::cudart::RuntimeContext::Instance().Memset(devPtr, value, count);
-  } @catch (...) {
-    return muda::runtime::cudart::RecordError(cudaErrorInternalError);
-  }
+  });
 }
 
 cudaError_t mudaRegisterKernelFromFile(const void* hostFunc, const char* metallibPath,
                                        const char* kernelName, const mudaKernelParamDesc* params,
                                        size_t paramCount) {
-  @try {
+  return muda::runtime::cudart::InvokeCAbi([&] {
     return muda::runtime::cudart::RuntimeContext::Instance().RegisterKernelFromFile(
         hostFunc, metallibPath, kernelName, params, paramCount);
-  } @catch (...) {
-    return muda::runtime::cudart::RecordError(cudaErrorInternalError);
-  }
+  });
 }
 
 cudaError_t mudaRegisterKernelFromData(const void* hostFunc, const void* metallibData,
                                        size_t metallibSize, const char* kernelName,
                                        const mudaKernelParamDesc* params, size_t paramCount) {
-  @try {
+  return muda::runtime::cudart::InvokeCAbi([&] {
     return muda::runtime::cudart::RuntimeContext::Instance().RegisterKernelFromData(
         hostFunc, metallibData, metallibSize, kernelName, params, paramCount);
-  } @catch (...) {
-    return muda::runtime::cudart::RecordError(cudaErrorInternalError);
-  }
+  });
 }
 
 cudaError_t cudaLaunchKernel(const void* func, dim3 gridDim, dim3 blockDim, void** args,
                              size_t sharedMem, cudaStream_t stream) {
-  @try {
+  return muda::runtime::cudart::InvokeCAbi([&] {
     return muda::runtime::cudart::RuntimeContext::Instance().LaunchKernel(func, gridDim, blockDim,
                                                                           args, sharedMem, stream);
-  } @catch (...) {
-    return muda::runtime::cudart::RecordError(cudaErrorInternalError);
-  }
+  });
 }
 
 cudaError_t cudaGetLastError(void) { return muda::runtime::cudart::ConsumeLastError(); }

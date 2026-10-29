@@ -19,9 +19,14 @@ target_include_directories(
 )
 
 target_compile_features(muda_runtime PUBLIC cxx_std_20)
-target_compile_options(muda_runtime PRIVATE -Wall -Wextra -Wpedantic)
 target_compile_options(muda_runtime PRIVATE "$<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>")
-target_link_libraries(muda_runtime PRIVATE "-framework Foundation" "-framework Metal")
+target_link_libraries(
+  muda_runtime
+  PRIVATE
+    muda_warnings
+    "-framework Foundation"
+    "-framework Metal"
+)
 
 install(TARGETS muda_runtime ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
 install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})

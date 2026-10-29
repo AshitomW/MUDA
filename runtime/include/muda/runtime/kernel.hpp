@@ -24,9 +24,10 @@ struct KernelArgument {
   const void* bytes = nullptr;
   std::size_t size = 0;
 
-  [[nodiscard]] static KernelArgument FromBuffer(std::size_t index, const Buffer& buffer);
-  [[nodiscard]] static KernelArgument FromBytes(std::size_t index, const void* data,
-                                                std::size_t size);
+  [[nodiscard]] static constexpr KernelArgument FromBuffer(std::size_t index,
+                                                           const Buffer& buffer) noexcept;
+  [[nodiscard]] static constexpr KernelArgument FromBytes(std::size_t index, const void* data,
+                                                          std::size_t size) noexcept;
 };
 
 struct DispatchSize {
@@ -50,18 +51,19 @@ class Kernel {
   void Dispatch(std::span<const KernelArgument> arguments, DispatchSize size) const;
 
  private:
-  explicit Kernel(std::shared_ptr<KernelStorage> storage);
+  explicit Kernel(std::unique_ptr<KernelStorage> storage);
 
-  std::shared_ptr<KernelStorage> storage_;
+  std::unique_ptr<KernelStorage> storage_;
 };
 
-inline KernelArgument KernelArgument::FromBuffer(std::size_t index, const Buffer& buffer) {
+constexpr KernelArgument KernelArgument::FromBuffer(std::size_t index,
+                                                    const Buffer& buffer) noexcept {
   return {index, &buffer, nullptr, 0};
 }
 
-inline KernelArgument KernelArgument::FromBytes(std::size_t index, const void* data,
-                                                std::size_t size) {
+constexpr KernelArgument KernelArgument::FromBytes(std::size_t index, const void* data,
+                                                   std::size_t size) noexcept {
   return {index, nullptr, data, size};
 }
 
-}
+}  // namespace muda::runtime

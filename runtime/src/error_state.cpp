@@ -104,4 +104,3 @@ const char* ErrorString(cudaError_t error) noexcept {
 }
 
 }  // namespace muda::runtime::cudart
-

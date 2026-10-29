@@ -3,6 +3,8 @@
  * @brief Runs the translated vector-add kernel and verifies results.
  */
 
+#include <cmath>
+#include <cstddef>
 #include <cstdio>
 #include <exception>
 #include <span>
@@ -18,9 +20,11 @@ int main(int argc, char** argv) {
     return 2;
   }
 
-  constexpr int kCount = 1024;
-  constexpr int kThreads = 256;
+  constexpr std::size_t kCount = 1024;
+  constexpr std::size_t kThreads = 256;
   constexpr std::size_t kBytes = kCount * sizeof(float);
+  constexpr float kExpectedSum = 3.0f;
+  constexpr float kTolerance = 1e-5f;
 
   std::vector<float> a(kCount, 1.0f);
   std::vector<float> b(kCount, 2.0f);
@@ -37,7 +41,7 @@ int main(int argc, char** argv) {
 
     const muda::runtime::Kernel kernel = muda::runtime::Kernel::Load(device, argv[1], "vector_add");
 
-    const int count = kCount;
+    const int count = static_cast<int>(kCount);
     const std::vector<muda::runtime::KernelArgument> arguments = {
         muda::runtime::KernelArgument::FromBuffer(0, buffer_a),
         muda::runtime::KernelArgument::FromBuffer(1, buffer_b),
@@ -52,14 +56,14 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  for (int index = 0; index < kCount; ++index) {
-    if (out[index] != 3.0f) {
-      std::fprintf(stderr, "mismatch at %d: %.1f\n", index, out[index]);
+  for (std::size_t index = 0; index < kCount; ++index) {
+    if (std::fabs(out[index] - kExpectedSum) > kTolerance) {
+      std::fprintf(stderr, "mismatch at %zu: %.1f\n", index, static_cast<double>(out[index]));
       return 1;
     }
   }
 
-  std::printf("ok: %d elements, out[0]=%.1f, out[%d]=%.1f\n", kCount, out[0], kCount - 1,
-              out[kCount - 1]);
+  std::printf("ok: %zu elements, out[0]=%.1f, out[%zu]=%.1f\n", kCount, static_cast<double>(out[0]),
+              kCount - 1, static_cast<double>(out[kCount - 1]));
   return 0;
 }

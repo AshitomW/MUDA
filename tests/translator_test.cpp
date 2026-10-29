@@ -94,6 +94,15 @@ int main() {
     return 1;
   }
 
+  const muda::compiler::TranslationResult vector_types =
+      muda::compiler::TranslateCudaToMsl("__global__ void k(const float4* a, ulong4* b) {}");
+  if (!vector_types.ok() || vector_types.kernel.parameters.size() != 2 ||
+      vector_types.kernel.parameters[0].metal_type() != "float4" ||
+      vector_types.kernel.parameters[1].metal_type() != "ulong4") {
+    std::cerr << "float4 and ulong4 vector parameters should translate cleanly\n";
+    return 1;
+  }
+
   std::cout << "translated vector_add\n";
   return 0;
 }

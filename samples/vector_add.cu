@@ -5,6 +5,7 @@
 
 #include <cuda_runtime.h>
 
+#include <cmath>
 #include <cstddef>
 #include <cstdio>
 #include <vector>
@@ -17,10 +18,12 @@ __global__ void vector_add(const float* a, const float* b, float* out, int n) {
 }
 
 int main() {
-  constexpr int kCount = 1024;
-  constexpr int kThreads = 256;
-  constexpr int kBlocks = (kCount + kThreads - 1) / kThreads;
+  constexpr std::size_t kCount = 1024;
+  constexpr unsigned int kThreads = 256;
+  constexpr unsigned int kBlocks = static_cast<unsigned int>((kCount + kThreads - 1) / kThreads);
   constexpr std::size_t kBytes = kCount * sizeof(float);
+  constexpr float kExpectedSum = 3.0f;
+  constexpr float kTolerance = 1e-5f;
 
   std::vector<float> a(kCount, 1.0f);
   std::vector<float> b(kCount, 2.0f);
@@ -29,21 +32,34 @@ int main() {
   float* device_a = nullptr;
   float* device_b = nullptr;
   float* device_out = nullptr;
-  if (cudaMalloc(&device_a, kBytes) != cudaSuccess) return 1;
-  if (cudaMalloc(&device_b, kBytes) != cudaSuccess) return 1;
-  if (cudaMalloc(&device_out, kBytes) != cudaSuccess) return 1;
+  if (cudaMalloc(reinterpret_cast<void**>(&device_a), kBytes) != cudaSuccess) {
+    return 1;
+  }
+  if (cudaMalloc(reinterpret_cast<void**>(&device_b), kBytes) != cudaSuccess) {
+    return 1;
+  }
+  if (cudaMalloc(reinterpret_cast<void**>(&device_out), kBytes) != cudaSuccess) {
+    return 1;
+  }
 
-  if (cudaMemcpy(device_a, a.data(), kBytes, cudaMemcpyHostToDevice) != cudaSuccess) return 1;
-  if (cudaMemcpy(device_b, b.data(), kBytes, cudaMemcpyHostToDevice) != cudaSuccess) return 1;
+  if (cudaMemcpy(device_a, a.data(), kBytes, cudaMemcpyHostToDevice) != cudaSuccess) {
+    return 1;
+  }
+  if (cudaMemcpy(device_b, b.data(), kBytes, cudaMemcpyHostToDevice) != cudaSuccess) {
+    return 1;
+  }
 
-  vector_add<<<kBlocks, kThreads>>>(device_a, device_b, device_out, kCount);
+  vector_add<<<kBlocks, kThreads>>>(device_a, device_b, device_out, static_cast<int>(kCount));
 
-  if (cudaMemcpy(out.data(), device_out, kBytes, cudaMemcpyDeviceToHost) != cudaSuccess) return 1;
+  if (cudaMemcpy(out.data(), device_out, kBytes, cudaMemcpyDeviceToHost) != cudaSuccess) {
+    return 1;
+  }
 
   cudaFree(device_a);
   cudaFree(device_b);
   cudaFree(device_out);
 
-  std::printf("%s\n", out[0] == 3.0f ? "ok" : "failed");
-  return out[0] == 3.0f ? 0 : 1;
+  const bool is_ok = std::fabs(out[0] - kExpectedSum) <= kTolerance;
+  std::printf("%s\n", is_ok ? "ok" : "failed");
+  return is_ok ? 0 : 1;
 }

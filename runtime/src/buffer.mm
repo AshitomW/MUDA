@@ -18,11 +18,11 @@ Buffer::~Buffer() = default;
 Buffer::Buffer(Buffer&&) noexcept = default;
 Buffer& Buffer::operator=(Buffer&&) noexcept = default;
 
-Buffer::Buffer(std::shared_ptr<BufferStorage> storage) : storage_(std::move(storage)) {}
+Buffer::Buffer(std::unique_ptr<BufferStorage> storage) : storage_(std::move(storage)) {}
 
-bool Buffer::valid() const { return storage_ != nullptr && storage_->buffer != nil; }
+bool Buffer::valid() const noexcept { return storage_ != nullptr && storage_->buffer != nil; }
 
-std::size_t Buffer::size() const { return storage_ != nullptr ? storage_->size : 0; }
+std::size_t Buffer::size() const noexcept { return storage_ != nullptr ? storage_->size : 0; }
 
 void Buffer::Write(const void* data, std::size_t size) {
   if (!valid()) {
@@ -54,4 +54,4 @@ void Buffer::Read(void* data, std::size_t size) const {
   }
 }
 
-}
+}  // namespace muda::runtime

@@ -6,4 +6,6 @@ DerivePointerAlignment: false
 PointerAlignment: Left
 SortIncludes: CaseSensitive
 IncludeBlocks: Regroup
-FixNamespaceComments: false
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+FixNamespaceComments: true

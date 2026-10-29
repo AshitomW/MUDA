@@ -24,18 +24,18 @@ class Buffer {
   Buffer(const Buffer&) = delete;
   Buffer& operator=(const Buffer&) = delete;
 
-  [[nodiscard]] bool valid() const;
-  [[nodiscard]] std::size_t size() const;
+  [[nodiscard]] bool valid() const noexcept;
+  [[nodiscard]] std::size_t size() const noexcept;
 
   void Write(const void* data, std::size_t size);
   void Read(void* data, std::size_t size) const;
 
  private:
-  explicit Buffer(std::shared_ptr<BufferStorage> storage);
+  explicit Buffer(std::unique_ptr<BufferStorage> storage);
 
-  std::shared_ptr<BufferStorage> storage_;
+  std::unique_ptr<BufferStorage> storage_;
   friend class Device;
   friend class Kernel;
 };
 
-}
+}  // namespace muda::runtime

@@ -5,14 +5,14 @@
 
 #pragma once
 
-#import <Metal/Metal.h>
+#include "cuda_runtime.h"
 
 #include <cstddef>
 #include <span>
 #include <unordered_map>
 #include <vector>
 
-#include "cuda_runtime.h"
+#import <Metal/Metal.h>
 
 namespace muda::runtime::cudart {
 

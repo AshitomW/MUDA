@@ -3,8 +3,7 @@
  * @brief Tests the end-to-end vector-add prototype.
  */
 
-#include <unistd.h>
-
+#include <cstddef>
 #include <exception>
 #include <filesystem>
 #include <iostream>
@@ -17,6 +16,7 @@
 #include "muda/runtime/buffer.hpp"
 #include "muda/runtime/device.hpp"
 #include "muda/runtime/kernel.hpp"
+#include "test_utils.hpp"
 
 int main() {
   if (!muda::compiler::MetalToolchainAvailable()) {
@@ -24,20 +24,16 @@ int main() {
     return 77;
   }
 
-  const std::filesystem::path temp =
-      std::filesystem::temp_directory_path() / ("muda_vector_add_test_" + std::to_string(getpid()));
-  std::error_code error;
-  std::filesystem::remove_all(temp, error);
-  std::filesystem::create_directories(temp, error);
-  if (error) {
-    std::cerr << "cannot create temp directory: " << error.message() << "\n";
+  const muda::testing::ScopedTempDir temp_dir("muda_vector_add_test");
+  if (!temp_dir.valid()) {
+    std::cerr << "cannot create temp directory\n";
     return 1;
   }
 
   try {
     muda::compiler::CompileOptions options;
     options.input = std::filesystem::path(MUDA_SOURCE_DIR) / "samples/vector_add.cu";
-    options.output = temp / "vector_add.metallib";
+    options.output = temp_dir.path() / "vector_add.metallib";
 
     const muda::compiler::CompileResult compiled = muda::compiler::Compile(options);
     if (compiled.status != muda::compiler::Status::kOk) {
@@ -45,8 +41,8 @@ int main() {
       return 1;
     }
 
-    constexpr int kCount = 1024;
-    constexpr int kThreads = 256;
+    constexpr std::size_t kCount = 1024;
+    constexpr std::size_t kThreads = 256;
     constexpr std::size_t kBytes = kCount * sizeof(float);
 
     const muda::runtime::Device device = muda::runtime::Device::Default();
@@ -63,7 +59,7 @@ int main() {
     const muda::runtime::Kernel kernel =
         muda::runtime::Kernel::Load(device, compiled.metallib_path, compiled.kernel_name);
 
-    const int count = kCount;
+    const int count = static_cast<int>(kCount);
     const std::vector<muda::runtime::KernelArgument> arguments = {
         muda::runtime::KernelArgument::FromBuffer(0, buffer_a),
         muda::runtime::KernelArgument::FromBuffer(1, buffer_b),
@@ -74,8 +70,8 @@ int main() {
     kernel.Dispatch(std::span<const muda::runtime::KernelArgument>(arguments), {kCount, kThreads});
     buffer_out.Read(out.data(), kBytes);
 
-    for (int index = 0; index < kCount; ++index) {
-      if (out[index] != 3.0f) {
+    for (std::size_t index = 0; index < kCount; ++index) {
+      if (!muda::testing::AreClose(out[index], 3.0f)) {
         std::cerr << "mismatch at " << index << ": " << out[index] << "\n";
         return 1;
       }
@@ -85,7 +81,6 @@ int main() {
     return 1;
   }
 
-  std::filesystem::remove_all(temp, error);
   std::cout << "executed vector_add\n";
   return 0;
 }

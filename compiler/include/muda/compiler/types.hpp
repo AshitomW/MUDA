@@ -133,6 +133,24 @@ enum class DiagnosticCode : std::uint16_t {
   return ScalarByteSize(type.scalar) * static_cast<std::size_t>(type.width);
 }
 
+[[nodiscard]] constexpr std::string_view SelectVectorSpelling(VectorWidth width,
+                                                              std::string_view w1,
+                                                              std::string_view w2,
+                                                              std::string_view w3,
+                                                              std::string_view w4) noexcept {
+  switch (width) {
+    case VectorWidth::k1:
+      return w1;
+    case VectorWidth::k2:
+      return w2;
+    case VectorWidth::k3:
+      return w3;
+    case VectorWidth::k4:
+      return w4;
+  }
+  return "";
+}
+
 [[nodiscard]] constexpr std::string_view MslTypeName(DataType type) noexcept {
   switch (type.scalar) {
     case ScalarType::kBool:
@@ -146,77 +164,17 @@ enum class DiagnosticCode : std::uint16_t {
     case ScalarType::kUInt16:
       return type.width == VectorWidth::k1 ? "ushort" : "";
     case ScalarType::kInt32:
-      switch (type.width) {
-        case VectorWidth::k1:
-          return "int";
-        case VectorWidth::k2:
-          return "int2";
-        case VectorWidth::k3:
-          return "int3";
-        case VectorWidth::k4:
-          return "int4";
-      }
-      return "";
+      return SelectVectorSpelling(type.width, "int", "int2", "int3", "int4");
     case ScalarType::kUInt32:
-      switch (type.width) {
-        case VectorWidth::k1:
-          return "uint";
-        case VectorWidth::k2:
-          return "uint2";
-        case VectorWidth::k3:
-          return "uint3";
-        case VectorWidth::k4:
-          return "uint4";
-      }
-      return "";
+      return SelectVectorSpelling(type.width, "uint", "uint2", "uint3", "uint4");
     case ScalarType::kInt64:
-      switch (type.width) {
-        case VectorWidth::k1:
-          return "long";
-        case VectorWidth::k2:
-          return "long2";
-        case VectorWidth::k3:
-          return "long3";
-        case VectorWidth::k4:
-          return "long4";
-      }
-      return "";
+      return SelectVectorSpelling(type.width, "long", "long2", "long3", "long4");
     case ScalarType::kUInt64:
-      switch (type.width) {
-        case VectorWidth::k1:
-          return "ulong";
-        case VectorWidth::k2:
-          return "ulong2";
-        case VectorWidth::k3:
-          return "ulong3";
-        case VectorWidth::k4:
-          return "ulong4";
-      }
-      return "";
+      return SelectVectorSpelling(type.width, "ulong", "ulong2", "ulong3", "ulong4");
     case ScalarType::kFloat16:
-      switch (type.width) {
-        case VectorWidth::k1:
-          return "half";
-        case VectorWidth::k2:
-          return "half2";
-        case VectorWidth::k3:
-          return "half3";
-        case VectorWidth::k4:
-          return "half4";
-      }
-      return "";
+      return SelectVectorSpelling(type.width, "half", "half2", "half3", "half4");
     case ScalarType::kFloat32:
-      switch (type.width) {
-        case VectorWidth::k1:
-          return "float";
-        case VectorWidth::k2:
-          return "float2";
-        case VectorWidth::k3:
-          return "float3";
-        case VectorWidth::k4:
-          return "float4";
-      }
-      return "";
+      return SelectVectorSpelling(type.width, "float", "float2", "float3", "float4");
   }
   return "";
 }

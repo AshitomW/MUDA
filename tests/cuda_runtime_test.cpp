@@ -5,8 +5,6 @@
 
 #include "cuda_runtime.h"
 
-#include <unistd.h>
-
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -17,6 +15,7 @@
 
 #include "muda/compiler/driver.hpp"
 #include "muda/compiler/toolchain.hpp"
+#include "test_utils.hpp"
 
 namespace {
 
@@ -340,22 +339,17 @@ bool TestKernelLaunch() {
     return true;
   }
 
-  const std::filesystem::path temp = std::filesystem::temp_directory_path() /
-                                     ("muda_cudart_launch_test_" + std::to_string(getpid()));
-  std::error_code fs_error;
-  std::filesystem::remove_all(temp, fs_error);
-  std::filesystem::create_directories(temp, fs_error);
-  if (!Expect(!fs_error, "failed to create temp directory for kernel launch test")) {
+  const muda::testing::ScopedTempDir temp_dir("muda_cudart_launch_test");
+  if (!Expect(temp_dir.valid(), "failed to create temp directory for kernel launch test")) {
     return false;
   }
 
   muda::compiler::CompileOptions options;
   options.input = std::filesystem::path(MUDA_SOURCE_DIR) / "samples/vector_add.cu";
-  options.output = temp / "vector_add.metallib";
+  options.output = temp_dir.path() / "vector_add.metallib";
 
   const muda::compiler::CompileResult compiled = muda::compiler::Compile(options);
   if (!Expect(compiled.status == muda::compiler::Status::kOk, "failed to compile vector_add.cu")) {
-    std::filesystem::remove_all(temp, fs_error);
     return false;
   }
 
@@ -363,7 +357,6 @@ bool TestKernelLaunch() {
           mudaRegisterKernelFromFile(host_fn, compiled.metallib_path.string().c_str(),
                                      "missing_kernel", params, 4) == cudaErrorInvalidDeviceFunction,
           "registering missing kernel name should return cudaErrorInvalidDeviceFunction")) {
-    std::filesystem::remove_all(temp, fs_error);
     return false;
   }
   (void)cudaGetLastError();
@@ -371,16 +364,18 @@ bool TestKernelLaunch() {
   if (!Expect(mudaRegisterKernelFromFile(host_fn, compiled.metallib_path.string().c_str(),
                                          compiled.kernel_name.c_str(), params, 4) == cudaSuccess,
               "mudaRegisterKernelFromFile should succeed")) {
-    std::filesystem::remove_all(temp, fs_error);
     return false;
   }
 
   std::ifstream lib_stream(compiled.metallib_path, std::ios::binary | std::ios::ate);
-  const auto lib_size = static_cast<std::size_t>(lib_stream.tellg());
+  const std::streamoff raw_lib_size = lib_stream.tellg();
+  if (!Expect(raw_lib_size > 0, "compiled metallib should not be empty")) {
+    return false;
+  }
+  const auto lib_size = static_cast<std::size_t>(raw_lib_size);
   lib_stream.seekg(0, std::ios::beg);
   std::vector<char> lib_bytes(lib_size);
   lib_stream.read(lib_bytes.data(), static_cast<std::streamsize>(lib_size));
-  std::filesystem::remove_all(temp, fs_error);
 
   if (!Expect(mudaRegisterKernelFromData(data_host_fn, lib_bytes.data(), lib_bytes.size(),
                                          compiled.kernel_name.c_str(), params, 4) == cudaSuccess,
@@ -409,10 +404,11 @@ bool TestKernelLaunch() {
   }
   (void)cudaGetLastError();
 
-  constexpr int kCount = 1024;
+  constexpr std::size_t kCount = 1024;
   constexpr unsigned int kBlockSize = 256;
-  constexpr unsigned int kGridSize = (kCount + kBlockSize - 1) / kBlockSize;
-  constexpr std::size_t kBytes = static_cast<std::size_t>(kCount) * sizeof(float);
+  constexpr unsigned int kGridSize =
+      static_cast<unsigned int>((kCount + kBlockSize - 1) / kBlockSize);
+  constexpr std::size_t kBytes = kCount * sizeof(float);
 
   float* dev_a = nullptr;
   float* dev_b = nullptr;
@@ -424,7 +420,7 @@ bool TestKernelLaunch() {
     return false;
   }
 
-  for (int index = 0; index < kCount; ++index) {
+  for (std::size_t index = 0; index < kCount; ++index) {
     dev_a[index] = 1.0f;
     dev_b[index] = 2.0f;
     dev_out[index] = 0.0f;
@@ -432,7 +428,7 @@ bool TestKernelLaunch() {
 
   float host_dummy = 0.0f;
   float* bad_ptr = &host_dummy;
-  int n = kCount;
+  int n = static_cast<int>(kCount);
   void* bad_args[4] = {&bad_ptr, &dev_b, &dev_out, &n};
   if (!Expect(cudaLaunchKernel(host_fn, dim3(kGridSize), dim3(kBlockSize), bad_args, 0, nullptr) ==
                   cudaErrorInvalidValue,
@@ -452,15 +448,15 @@ bool TestKernelLaunch() {
     return false;
   }
 
-  for (int index = 0; index < kCount; ++index) {
-    if (!Expect(dev_out[index] == 3.0f, "vector_add output mismatch")) {
+  for (std::size_t index = 0; index < kCount; ++index) {
+    if (!Expect(muda::testing::AreClose(dev_out[index], 3.0f), "vector_add output mismatch")) {
       return false;
     }
   }
 
-  constexpr int kOffset = 512;
+  constexpr std::size_t kOffset = 512;
   constexpr int kSubCount = 512;
-  for (int index = 0; index < kCount; ++index) {
+  for (std::size_t index = 0; index < kCount; ++index) {
     dev_a[index] = 10.0f;
     dev_b[index] = 20.0f;
     dev_out[index] = -1.0f;
@@ -481,13 +477,15 @@ bool TestKernelLaunch() {
     return false;
   }
 
-  for (int index = 0; index < kOffset; ++index) {
-    if (!Expect(dev_out[index] == -1.0f, "elements before offset should be untouched")) {
+  for (std::size_t index = 0; index < kOffset; ++index) {
+    if (!Expect(muda::testing::AreClose(dev_out[index], -1.0f),
+                "elements before offset should be untouched")) {
       return false;
     }
   }
-  for (int index = kOffset; index < kCount; ++index) {
-    if (!Expect(dev_out[index] == 30.0f, "elements after offset should equal 30.0f")) {
+  for (std::size_t index = kOffset; index < kCount; ++index) {
+    if (!Expect(muda::testing::AreClose(dev_out[index], 30.0f),
+                "elements after offset should equal 30.0f")) {
       return false;
     }
   }

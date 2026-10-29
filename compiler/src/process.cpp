@@ -17,6 +17,30 @@
 extern char** environ;
 
 namespace muda::compiler::detail {
+namespace {
+
+class ScopedFileActions {
+ public:
+  ScopedFileActions() noexcept : initialized_(posix_spawn_file_actions_init(&actions_) == 0) {}
+
+  ~ScopedFileActions() {
+    if (initialized_) {
+      (void)posix_spawn_file_actions_destroy(&actions_);
+    }
+  }
+
+  ScopedFileActions(const ScopedFileActions&) = delete;
+  ScopedFileActions& operator=(const ScopedFileActions&) = delete;
+
+  [[nodiscard]] bool valid() const noexcept { return initialized_; }
+  [[nodiscard]] posix_spawn_file_actions_t* get() noexcept { return &actions_; }
+
+ private:
+  posix_spawn_file_actions_t actions_{};
+  bool initialized_ = false;
+};
+
+}  // namespace
 
 ProcessResult RunProcess(std::span<const std::string_view> arguments,
                          ProcessOutputMode output_mode) {
@@ -37,8 +61,8 @@ ProcessResult RunProcess(std::span<const std::string_view> arguments,
   }
   argv.push_back(nullptr);
 
-  posix_spawn_file_actions_t file_actions;
-  if (posix_spawn_file_actions_init(&file_actions) != 0) {
+  ScopedFileActions file_actions;
+  if (!file_actions.valid()) {
     return {-1};
   }
 
@@ -46,19 +70,18 @@ ProcessResult RunProcess(std::span<const std::string_view> arguments,
   pid_t child = -1;
 
   if (output_mode == ProcessOutputMode::kSilent) {
-    spawn_result =
-        posix_spawn_file_actions_addopen(&file_actions, STDOUT_FILENO, "/dev/null", O_WRONLY, 0);
+    spawn_result = posix_spawn_file_actions_addopen(file_actions.get(), STDOUT_FILENO, "/dev/null",
+                                                    O_WRONLY, 0);
     if (spawn_result == 0) {
-      spawn_result =
-          posix_spawn_file_actions_addopen(&file_actions, STDERR_FILENO, "/dev/null", O_WRONLY, 0);
+      spawn_result = posix_spawn_file_actions_addopen(file_actions.get(), STDERR_FILENO,
+                                                      "/dev/null", O_WRONLY, 0);
     }
   }
 
   if (spawn_result == 0) {
-    spawn_result = posix_spawnp(&child, argv.front(), &file_actions, nullptr, argv.data(), environ);
+    spawn_result =
+        posix_spawnp(&child, argv.front(), file_actions.get(), nullptr, argv.data(), environ);
   }
-
-  (void)posix_spawn_file_actions_destroy(&file_actions);
 
   if (spawn_result != 0 || child == -1) {
     return {-1};

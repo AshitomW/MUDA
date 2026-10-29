@@ -47,14 +47,14 @@ class Device {
   Device& operator=(const Device&) = delete;
 
   [[nodiscard]] static Device Default();
-  [[nodiscard]] bool valid() const;
+  [[nodiscard]] bool valid() const noexcept;
   [[nodiscard]] DeviceInfo info() const;
   [[nodiscard]] Buffer Allocate(std::size_t bytes) const;
 
  private:
-  explicit Device(std::shared_ptr<DeviceStorage> storage);
+  explicit Device(std::unique_ptr<DeviceStorage> storage);
 
-  std::shared_ptr<DeviceStorage> storage_;
+  std::unique_ptr<DeviceStorage> storage_;
   friend class Kernel;
 };
 

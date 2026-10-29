@@ -67,4 +67,3 @@ bool AllocationTable::IsOffsetValid(const AllocationRecord* record,
 void AllocationTable::Clear() { records_.clear(); }
 
 }  // namespace muda::runtime::cudart
-
