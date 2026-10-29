@@ -1,6 +1,7 @@
 add_library(
   muda_runtime
   src/buffer.mm
+  src/cuda_runtime.mm
   src/device.mm
   src/kernel.mm
 )
