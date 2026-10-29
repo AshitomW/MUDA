@@ -216,9 +216,7 @@ class RuntimeState {
     const auto dst_addr = reinterpret_cast<std::uintptr_t>(dst);
     const auto src_addr = reinterpret_cast<std::uintptr_t>(src);
 
-    bool touches_device = false;
-    {
-      std::shared_lock<std::shared_mutex> lock(mutex_);
+    const auto validate_copy_locked = [&]() noexcept -> cudaError_t {
       const AllocationRecord* dst_record = FindContainingRecordLocked(dst_addr);
       const AllocationRecord* src_record = FindContainingRecordLocked(src_addr);
 
@@ -235,19 +233,16 @@ class RuntimeState {
           if (!dst_valid_device || src_record != nullptr) {
             return RecordError(cudaErrorInvalidValue);
           }
-          touches_device = true;
           break;
         case cudaMemcpyDeviceToHost:
           if (!src_valid_device || dst_record != nullptr) {
             return RecordError(cudaErrorInvalidValue);
           }
-          touches_device = true;
           break;
         case cudaMemcpyDeviceToDevice:
           if (!dst_valid_device || !src_valid_device) {
             return RecordError(cudaErrorInvalidValue);
           }
-          touches_device = true;
           break;
         case cudaMemcpyDefault:
           if (dst_record != nullptr && !dst_valid_device) {
@@ -256,9 +251,21 @@ class RuntimeState {
           if (src_record != nullptr && !src_valid_device) {
             return RecordError(cudaErrorInvalidValue);
           }
-          touches_device = (dst_record != nullptr || src_record != nullptr);
           break;
       }
+      return cudaSuccess;
+    };
+
+    bool touches_device = false;
+    {
+      std::shared_lock<std::shared_mutex> lock(mutex_);
+      const AllocationRecord* dst_record = FindContainingRecordLocked(dst_addr);
+      const AllocationRecord* src_record = FindContainingRecordLocked(src_addr);
+      const cudaError_t validation_status = validate_copy_locked();
+      if (validation_status != cudaSuccess) {
+        return validation_status;
+      }
+      touches_device = (dst_record != nullptr || src_record != nullptr);
     }
 
     if (touches_device) {
@@ -266,6 +273,12 @@ class RuntimeState {
       if (sync_status != cudaSuccess) {
         return sync_status;
       }
+    }
+
+    std::shared_lock<std::shared_mutex> lock(mutex_);
+    const cudaError_t validation_status = validate_copy_locked();
+    if (validation_status != cudaSuccess) {
+      return validation_status;
     }
 
     if (count > 0 && dst != src) {
@@ -280,17 +293,16 @@ class RuntimeState {
     }
 
     const auto addr = reinterpret_cast<std::uintptr_t>(dev_ptr);
-    {
-      std::shared_lock<std::shared_mutex> lock(mutex_);
-      const AllocationRecord* record = FindContainingRecordLocked(addr);
-      if (!IsRangeValidInRecord(record, addr, count)) {
-        return RecordError(cudaErrorInvalidValue);
-      }
-    }
 
     const cudaError_t sync_status = Synchronize();
     if (sync_status != cudaSuccess) {
       return sync_status;
+    }
+
+    std::shared_lock<std::shared_mutex> lock(mutex_);
+    const AllocationRecord* record = FindContainingRecordLocked(addr);
+    if (!IsRangeValidInRecord(record, addr, count)) {
+      return RecordError(cudaErrorInvalidValue);
     }
 
     if (count > 0) {
@@ -347,7 +359,7 @@ class RuntimeState {
       return false;
     }
     if (offset == record->size && count == 0) {
-      return offset == 0;
+      return true;
     }
     return count <= (record->size - offset);
   }

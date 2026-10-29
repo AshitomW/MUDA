@@ -171,6 +171,20 @@ bool TestMemoryAndSync() {
               "cudaMemcpy Default should succeed")) {
     return false;
   }
+  if (!Expect(cudaMemcpy(dev_a + kElements, host_in.data(), 0, cudaMemcpyHostToDevice) ==
+                  cudaSuccess,
+              "zero-length HostToDevice at end pointer should succeed")) {
+    return false;
+  }
+  if (!Expect(cudaMemcpy(host_out.data(), dev_a + kElements, 0, cudaMemcpyDeviceToHost) ==
+                  cudaSuccess,
+              "zero-length DeviceToHost at end pointer should succeed")) {
+    return false;
+  }
+  if (!Expect(cudaMemset(dev_a + kElements, 0, 0) == cudaSuccess,
+              "zero-length cudaMemset at end pointer should succeed")) {
+    return false;
+  }
   if (!Expect(cudaDeviceSynchronize() == cudaSuccess, "cudaDeviceSynchronize should succeed")) {
     return false;
   }
