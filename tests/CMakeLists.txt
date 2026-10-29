@@ -9,7 +9,8 @@ target_compile_options(device_test PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME device_test COMMAND device_test)
 
 add_executable(cuda_runtime_test cuda_runtime_test.cpp)
-target_link_libraries(cuda_runtime_test PRIVATE muda::runtime)
+target_link_libraries(cuda_runtime_test PRIVATE muda::compiler muda::runtime)
+target_compile_definitions(cuda_runtime_test PRIVATE MUDA_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
 target_compile_options(cuda_runtime_test PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME cuda_runtime_test COMMAND cuda_runtime_test)
 
