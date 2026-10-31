@@ -25,6 +25,8 @@ struct CompileOptions {
   std::filesystem::path output;
   OutputKind output_kind = OutputKind::kAuto;
   IntermediatePolicy intermediates = IntermediatePolicy::kRemove;
+  MetalStandard metal_standard = MetalStandard::kMetal32;
+  OptimizationLevel optimization = OptimizationLevel::kO3;
   std::filesystem::path cache_dir;
   bool disable_cache = false;
   std::vector<std::filesystem::path> include_dirs;

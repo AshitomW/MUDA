@@ -191,6 +191,34 @@ typedef struct dim3 {
 #endif
 } dim3;
 
+typedef struct float2 {
+  float x, y;
+} float2;
+typedef struct float3 {
+  float x, y, z;
+} float3;
+typedef struct float4 {
+  float x, y, z, w;
+} float4;
+typedef struct int2 {
+  int x, y;
+} int2;
+typedef struct int3 {
+  int x, y, z;
+} int3;
+typedef struct int4 {
+  int x, y, z, w;
+} int4;
+typedef struct uint2 {
+  unsigned int x, y;
+} uint2;
+typedef struct uint3 {
+  unsigned int x, y, z;
+} uint3;
+typedef struct uint4 {
+  unsigned int x, y, z, w;
+} uint4;
+
 /**
  * @brief Opaque CUDA stream handle.
  */

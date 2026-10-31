@@ -94,6 +94,55 @@ enum class IntermediatePolicy : std::uint8_t {
 };
 
 /**
+ * @brief Optimization level passed to the device and host compilers.
+ */
+enum class OptimizationLevel : std::uint8_t {
+  kO0,
+  kO1,
+  kO2,
+  kO3,
+  kFast,
+};
+
+[[nodiscard]] constexpr std::string_view OptimizationLevelFlag(OptimizationLevel level) noexcept {
+  switch (level) {
+    case OptimizationLevel::kO0:
+      return "-O0";
+    case OptimizationLevel::kO1:
+      return "-O1";
+    case OptimizationLevel::kO2:
+      return "-O2";
+    case OptimizationLevel::kO3:
+      return "-O3";
+    case OptimizationLevel::kFast:
+      return "-Ofast";
+  }
+}
+
+/**
+ * @brief Metal Shading Language standard version.
+ */
+enum class MetalStandard : std::uint8_t {
+  kMetal24,
+  kMetal30,
+  kMetal31,
+  kMetal32,
+};
+
+[[nodiscard]] constexpr std::string_view MetalStandardFlag(MetalStandard std_ver) noexcept {
+  switch (std_ver) {
+    case MetalStandard::kMetal24:
+      return "-std=metal2.4";
+    case MetalStandard::kMetal30:
+      return "-std=metal3.0";
+    case MetalStandard::kMetal31:
+      return "-std=metal3.1";
+    case MetalStandard::kMetal32:
+      return "-std=metal3.2";
+  }
+}
+
+/**
  * @brief Stable compiler and driver diagnostic codes (ALY-C* / ALY-I* / ALY-M* / ALY-T*).
  */
 enum class DiagnosticCode : std::uint16_t {

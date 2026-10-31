@@ -11,6 +11,7 @@
 #include <dispatch/dispatch.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -83,8 +84,16 @@ constexpr std::size_t kDefaultTotalConstMem = 65536;
   return std::chrono::duration<double>(Clock::now().time_since_epoch()).count();
 }
 
-void WaitForQueue(id<MTLCommandQueue> queue) noexcept {
+void WaitForQueue(id<MTLCommandQueue> queue, id<MTLCommandBuffer> last_cmd = nil,
+                  std::atomic<std::uint64_t>* pending = nullptr) noexcept {
   if (queue == nil) {
+    return;
+  }
+  if (pending != nullptr && pending->load(std::memory_order_acquire) == 0) {
+    return;
+  }
+  if (last_cmd != nil) {
+    [last_cmd waitUntilCompleted];
     return;
   }
   @autoreleasepool {
@@ -109,6 +118,10 @@ struct StreamState {
   unsigned int flags = cudaStreamDefault;
   mutable std::mutex mutex;
   id<MTLCommandBuffer> last_command_buffer = nil;
+  id<MTLCommandBuffer> active_command_buffer = nil;
+  id<MTLComputeCommandEncoder> active_encoder = nil;
+  id<MTLComputePipelineState> active_pipeline = nil;
+  std::size_t active_dispatches = 0;
   std::atomic<std::uint64_t> pending_commands{0};
 };
 
@@ -388,6 +401,7 @@ class RuntimeContext {
 
   cudaError_t Synchronize() {
     id<MTLCommandQueue> default_queue = nil;
+    id<MTLCommandBuffer> default_last_cmd = nil;
     std::vector<std::shared_ptr<StreamState>> active_streams;
     {
       std::unique_lock<std::shared_mutex> lock(mutex_);
@@ -397,13 +411,30 @@ class RuntimeContext {
       }
       default_queue = queue_;
       active_streams = streams_.SnapshotAll();
+
+      {
+        std::lock_guard<std::mutex> def_lock(default_stream_mutex_);
+        FlushDefaultStreamLocked();
+        default_last_cmd = default_last_command_buffer_;
+      }
+      for (const std::shared_ptr<StreamState>& stream : active_streams) {
+        if (stream != nullptr) {
+          std::lock_guard<std::mutex> stream_lock(stream->mutex);
+          FlushStreamLocked(stream.get());
+        }
+      }
     }
 
     @autoreleasepool {
-      WaitForQueue(default_queue);
+      WaitForQueue(default_queue, default_last_cmd, &default_pending_commands_);
       for (const std::shared_ptr<StreamState>& stream : active_streams) {
         if (stream != nullptr) {
-          WaitForQueue(stream->queue);
+          id<MTLCommandBuffer> s_last = nil;
+          {
+            std::lock_guard<std::mutex> s_lock(stream->mutex);
+            s_last = stream->last_command_buffer;
+          }
+          WaitForQueue(stream->queue, s_last, &stream->pending_commands);
         }
       }
       const cudaError_t prior_error = async_error_.exchange(cudaSuccess, std::memory_order_acq_rel);
@@ -430,6 +461,17 @@ class RuntimeContext {
         queue_ = nil;
         device_ = nil;
         async_error_.store(cudaSuccess, std::memory_order_release);
+
+        {
+          std::lock_guard<std::mutex> def_lock(default_stream_mutex_);
+          FlushDefaultStreamLocked();
+        }
+        for (const std::shared_ptr<StreamState>& stream : old_streams) {
+          if (stream != nullptr) {
+            std::lock_guard<std::mutex> stream_lock(stream->mutex);
+            FlushStreamLocked(stream.get());
+          }
+        }
       }
 
       WaitForQueue(old_queue);
@@ -535,6 +577,17 @@ class RuntimeContext {
         }
         default_queue = queue_;
         active_streams = streams_.SnapshotAll();
+
+        {
+          std::lock_guard<std::mutex> def_lock(default_stream_mutex_);
+          FlushDefaultStreamLocked();
+        }
+        for (const std::shared_ptr<StreamState>& stream : active_streams) {
+          if (stream != nullptr) {
+            std::lock_guard<std::mutex> stream_lock(stream->mutex);
+            FlushStreamLocked(stream.get());
+          }
+        }
       }
 
       WaitForQueue(default_queue);
@@ -584,6 +637,31 @@ class RuntimeContext {
     }
 
     if (count > 0 && dst != src) {
+      const AllocationRecord* dst_rec = allocations_.FindContaining(dst_addr);
+      const AllocationRecord* src_rec = allocations_.FindContaining(src_addr);
+      if (dst_rec != nullptr && src_rec != nullptr &&
+          (dst_rec->buffer != src_rec->buffer || dst_addr.value != src_addr.value)) {
+        const std::size_t dst_offset =
+            static_cast<std::size_t>(dst_addr.value - dst_rec->base_address.value);
+        const std::size_t src_offset =
+            static_cast<std::size_t>(src_addr.value - src_rec->base_address.value);
+        @autoreleasepool {
+          id<MTLCommandBuffer> cmd = [queue_ commandBuffer];
+          id<MTLBlitCommandEncoder> blit = [cmd blitCommandEncoder];
+          if (cmd == nil || blit == nil) {
+            return RecordError(cudaErrorLaunchFailure);
+          }
+          [blit copyFromBuffer:src_rec->buffer
+                   sourceOffset:src_offset
+                       toBuffer:dst_rec->buffer
+              destinationOffset:dst_offset
+                           size:count];
+          [blit endEncoding];
+          [cmd commit];
+          [cmd waitUntilCompleted];
+          return cudaSuccess;
+        }
+      }
       std::memmove(dst, src, count);
     }
     return cudaSuccess;
@@ -636,6 +714,14 @@ class RuntimeContext {
 
     if (count == 0 || dst == src) {
       return cudaSuccess;
+    }
+
+    if (stream_state != nullptr) {
+      std::lock_guard<std::mutex> stream_lock(stream_state->mutex);
+      FlushStreamLocked(stream_state.get());
+    } else {
+      std::lock_guard<std::mutex> def_lock(default_stream_mutex_);
+      FlushDefaultStreamLocked();
     }
 
     // If both endpoints are GPU buffers and do not overlap at identical offsets, encode a
@@ -806,6 +892,14 @@ class RuntimeContext {
       return cudaSuccess;
     }
 
+    if (stream_state != nullptr) {
+      std::lock_guard<std::mutex> stream_lock(stream_state->mutex);
+      FlushStreamLocked(stream_state.get());
+    } else {
+      std::lock_guard<std::mutex> def_lock(default_stream_mutex_);
+      FlushDefaultStreamLocked();
+    }
+
     // Metal fillBuffer requires 4-byte aligned offset and length on some OS versions; use
     // fillBuffer when aligned, otherwise synchronize the target stream and memset directly.
     if ((offset % 4u) == 0u && (count % 4u) == 0u) {
@@ -896,6 +990,10 @@ class RuntimeContext {
     if (removed == nullptr) {
       return RecordError(cudaErrorInvalidResourceHandle);
     }
+    {
+      std::lock_guard<std::mutex> stream_lock(removed->mutex);
+      FlushStreamLocked(removed.get());
+    }
     WaitForQueue(removed->queue);
     return cudaSuccess;
   }
@@ -908,12 +1006,20 @@ class RuntimeContext {
     if (stream == nullptr) {
       return RecordError(cudaErrorInvalidResourceHandle);
     }
-    WaitForQueue(stream->queue);
-    const cudaError_t prior_error = async_error_.exchange(cudaSuccess, std::memory_order_acq_rel);
-    if (prior_error != cudaSuccess) {
-      return RecordError(prior_error);
+    @autoreleasepool {
+      id<MTLCommandBuffer> s_last = nil;
+      {
+        std::lock_guard<std::mutex> stream_lock(stream->mutex);
+        FlushStreamLocked(stream.get());
+        s_last = stream->last_command_buffer;
+      }
+      WaitForQueue(stream->queue, s_last, &stream->pending_commands);
+      const cudaError_t prior_error = async_error_.exchange(cudaSuccess, std::memory_order_acq_rel);
+      if (prior_error != cudaSuccess) {
+        return RecordError(prior_error);
+      }
+      return cudaSuccess;
     }
-    return cudaSuccess;
   }
 
   cudaError_t StreamQuery(cudaStream_t stream_handle) {
@@ -921,6 +1027,10 @@ class RuntimeContext {
       const cudaError_t status = EnsureInitialized();
       if (status != cudaSuccess) {
         return status;
+      }
+      {
+        std::lock_guard<std::mutex> def_lock(default_stream_mutex_);
+        FlushDefaultStreamLocked();
       }
       if (default_pending_commands_.load(std::memory_order_acquire) > 0) {
         return cudaErrorNotReady;
@@ -930,6 +1040,10 @@ class RuntimeContext {
     std::shared_ptr<StreamState> stream = streams_.Lookup(stream_handle);
     if (stream == nullptr) {
       return RecordError(cudaErrorInvalidResourceHandle);
+    }
+    {
+      std::lock_guard<std::mutex> stream_lock(stream->mutex);
+      FlushStreamLocked(stream.get());
     }
     if (stream->pending_commands.load(std::memory_order_acquire) > 0) {
       return cudaErrorNotReady;
@@ -987,6 +1101,14 @@ class RuntimeContext {
     }
 
     @autoreleasepool {
+      if (stream_state != nullptr) {
+        std::lock_guard<std::mutex> stream_lock(stream_state->mutex);
+        FlushStreamLocked(stream_state.get());
+      } else {
+        std::lock_guard<std::mutex> def_lock(default_stream_mutex_);
+        FlushDefaultStreamLocked();
+      }
+
       id<MTLCommandBuffer> command_buffer = [target_queue commandBuffer];
       if (command_buffer == nil) {
         return RecordError(cudaErrorLaunchFailure);
@@ -1131,6 +1253,14 @@ class RuntimeContext {
     }
 
     @autoreleasepool {
+      if (stream_state != nullptr) {
+        std::lock_guard<std::mutex> stream_lock(stream_state->mutex);
+        FlushStreamLocked(stream_state.get());
+      } else {
+        std::lock_guard<std::mutex> def_lock(default_stream_mutex_);
+        FlushDefaultStreamLocked();
+      }
+
       id<MTLCommandBuffer> command_buffer = [target_queue commandBuffer];
       if (command_buffer == nil) {
         return RecordError(cudaErrorLaunchFailure);
@@ -1241,13 +1371,24 @@ class RuntimeContext {
         return config_status;
       }
 
-      std::vector<BoundArgument> bound_args;
-      const cudaError_t bind_status = BindLaunchArguments(*kernel, args, &bound_args);
+      constexpr std::size_t kMaxInlineArgs = 32;
+      std::array<BoundArgument, kMaxInlineArgs> inline_args;
+      std::vector<BoundArgument> heap_args;
+      const std::size_t param_count = kernel->params.size();
+      std::span<BoundArgument> bound_span;
+      if (param_count <= kMaxInlineArgs) {
+        bound_span = std::span<BoundArgument>(inline_args.data(), param_count);
+      } else {
+        heap_args.resize(param_count);
+        bound_span = std::span<BoundArgument>(heap_args.data(), param_count);
+      }
+
+      const cudaError_t bind_status = BindLaunchArguments(*kernel, args, bound_span);
       if (bind_status != cudaSuccess) {
         return bind_status;
       }
 
-      return EncodeAndCommitLaunch(*kernel, bound_args, grid_dim, block_dim, shared_mem,
+      return EncodeAndCommitLaunch(*kernel, bound_span, grid_dim, block_dim, shared_mem,
                                    target_queue, stream_state.get());
     }
   }
@@ -1307,15 +1448,17 @@ class RuntimeContext {
     return cudaSuccess;
   }
 
-  void CommitStreamCommandBuffer(StreamState* stream_state, id<MTLCommandBuffer> command_buffer) {
+  void CommitStreamCommandBufferLocked(StreamState* stream_state,
+                                       id<MTLCommandBuffer> command_buffer) {
     std::atomic<cudaError_t>* async_error_ptr = &async_error_;
     std::atomic<std::uint64_t>* pending_counter =
         (stream_state != nullptr) ? &stream_state->pending_commands : &default_pending_commands_;
     pending_counter->fetch_add(1, std::memory_order_acq_rel);
 
     if (stream_state != nullptr) {
-      std::lock_guard<std::mutex> stream_lock(stream_state->mutex);
       stream_state->last_command_buffer = command_buffer;
+    } else {
+      default_last_command_buffer_ = command_buffer;
     }
 
     [command_buffer addCompletedHandler:^(id<MTLCommandBuffer> completed_buffer) {
@@ -1327,6 +1470,40 @@ class RuntimeContext {
       pending_counter->fetch_sub(1, std::memory_order_acq_rel);
     }];
     [command_buffer commit];
+  }
+
+  void CommitStreamCommandBuffer(StreamState* stream_state, id<MTLCommandBuffer> command_buffer) {
+    if (stream_state != nullptr) {
+      std::lock_guard<std::mutex> stream_lock(stream_state->mutex);
+      CommitStreamCommandBufferLocked(stream_state, command_buffer);
+    } else {
+      std::lock_guard<std::mutex> def_lock(default_stream_mutex_);
+      CommitStreamCommandBufferLocked(nullptr, command_buffer);
+    }
+  }
+
+  void FlushStreamLocked(StreamState* stream) {
+    if (stream == nullptr || stream->active_encoder == nil) {
+      return;
+    }
+    [stream->active_encoder endEncoding];
+    stream->active_encoder = nil;
+    stream->active_pipeline = nil;
+    stream->active_dispatches = 0;
+    CommitStreamCommandBufferLocked(stream, stream->active_command_buffer);
+    stream->active_command_buffer = nil;
+  }
+
+  void FlushDefaultStreamLocked() {
+    if (default_active_encoder_ == nil) {
+      return;
+    }
+    [default_active_encoder_ endEncoding];
+    default_active_encoder_ = nil;
+    default_active_pipeline_ = nil;
+    default_active_dispatches_ = 0;
+    CommitStreamCommandBufferLocked(nullptr, default_active_command_buffer_);
+    default_active_command_buffer_ = nil;
   }
 
   cudaError_t ValidateCopyLocked(DeviceAddress dst_addr, DeviceAddress src_addr, std::size_t count,
@@ -1438,19 +1615,21 @@ class RuntimeContext {
   }
 
   cudaError_t BindLaunchArguments(const RegisteredKernel& kernel, void** args,
-                                  std::vector<BoundArgument>* out_bound) const {
+                                  std::span<BoundArgument> out_bound) const {
     const std::size_t param_count = kernel.params.size();
     if (param_count > 0 && args == nullptr) {
       return RecordError(cudaErrorInvalidValue);
     }
+    if (out_bound.size() != param_count) {
+      return RecordError(cudaErrorInvalidValue);
+    }
 
-    out_bound->resize(param_count);
     for (std::size_t index = 0; index < param_count; ++index) {
       if (args[index] == nullptr) {
         return RecordError(cudaErrorInvalidValue);
       }
       const mudaKernelParamDesc& desc = kernel.params[index];
-      BoundArgument& bound = (*out_bound)[index];
+      BoundArgument& bound = out_bound[index];
       bound.kind = desc.kind;
 
       if (desc.kind == mudaKernelParamBuffer) {
@@ -1478,32 +1657,74 @@ class RuntimeContext {
                                     std::span<const BoundArgument> bound_args, dim3 grid_dim,
                                     dim3 block_dim, std::size_t shared_mem,
                                     id<MTLCommandQueue> target_queue, StreamState* stream_state) {
-    id<MTLCommandBuffer> command_buffer = [target_queue commandBuffer];
-    id<MTLComputeCommandEncoder> encoder = [command_buffer computeCommandEncoder];
-    if (command_buffer == nil || encoder == nil) {
-      return RecordError(cudaErrorLaunchFailure);
+    constexpr std::size_t kMaxBatchDispatches = 64;
+
+    std::unique_lock<std::mutex> lock;
+    if (stream_state != nullptr) {
+      lock = std::unique_lock<std::mutex>(stream_state->mutex);
+    } else {
+      lock = std::unique_lock<std::mutex>(default_stream_mutex_);
     }
 
-    [encoder setComputePipelineState:kernel.pipeline];
+    __strong id<MTLCommandBuffer>& active_cmd = (stream_state != nullptr)
+                                                    ? stream_state->active_command_buffer
+                                                    : default_active_command_buffer_;
+    __strong id<MTLComputeCommandEncoder>& active_enc =
+        (stream_state != nullptr) ? stream_state->active_encoder : default_active_encoder_;
+    __strong id<MTLComputePipelineState>& active_pipe =
+        (stream_state != nullptr) ? stream_state->active_pipeline : default_active_pipeline_;
+    std::size_t& active_disp =
+        (stream_state != nullptr) ? stream_state->active_dispatches : default_active_dispatches_;
+
+    if (active_cmd == nil || active_enc == nil) {
+      active_cmd = [target_queue commandBuffer];
+      if (active_cmd == nil) {
+        return RecordError(cudaErrorLaunchFailure);
+      }
+      active_enc = [active_cmd computeCommandEncoder];
+      if (active_enc == nil) {
+        active_cmd = nil;
+        return RecordError(cudaErrorLaunchFailure);
+      }
+      active_pipe = nil;
+      active_disp = 0;
+    }
+
+    if (active_pipe != kernel.pipeline) {
+      [active_enc setComputePipelineState:kernel.pipeline];
+      active_pipe = kernel.pipeline;
+    }
+
+    if (active_disp > 0) {
+      [active_enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+    }
+
     for (std::size_t index = 0; index < bound_args.size(); ++index) {
       const BoundArgument& bound = bound_args[index];
       if (bound.kind == mudaKernelParamBuffer) {
-        [encoder setBuffer:bound.buffer offset:bound.offset atIndex:index];
+        [active_enc setBuffer:bound.buffer offset:bound.offset atIndex:index];
       } else {
-        [encoder setBytes:bound.bytes length:bound.size atIndex:index];
+        [active_enc setBytes:bound.bytes length:bound.size atIndex:index];
       }
     }
 
     if (shared_mem > 0) {
       const std::size_t aligned_shared = AlignUp(shared_mem, 16u);
-      [encoder setThreadgroupMemoryLength:aligned_shared atIndex:0];
+      [active_enc setThreadgroupMemoryLength:aligned_shared atIndex:0];
     }
 
-    [encoder dispatchThreadgroups:MTLSizeMake(grid_dim.x, grid_dim.y, grid_dim.z)
-            threadsPerThreadgroup:MTLSizeMake(block_dim.x, block_dim.y, block_dim.z)];
-    [encoder endEncoding];
+    [active_enc dispatchThreadgroups:MTLSizeMake(grid_dim.x, grid_dim.y, grid_dim.z)
+               threadsPerThreadgroup:MTLSizeMake(block_dim.x, block_dim.y, block_dim.z)];
+    active_disp++;
 
-    CommitStreamCommandBuffer(stream_state, command_buffer);
+    if (active_disp >= kMaxBatchDispatches) {
+      if (stream_state != nullptr) {
+        FlushStreamLocked(stream_state);
+      } else {
+        FlushDefaultStreamLocked();
+      }
+    }
+
     return cudaSuccess;
   }
 
@@ -1543,6 +1764,12 @@ class RuntimeContext {
   HandleTable<EventState, HandleKind::kEvent> events_;
   std::atomic<std::uint64_t> default_pending_commands_{0};
   std::atomic<cudaError_t> async_error_{cudaSuccess};
+  id<MTLCommandBuffer> default_last_command_buffer_ = nil;
+  id<MTLCommandBuffer> default_active_command_buffer_ = nil;
+  id<MTLComputeCommandEncoder> default_active_encoder_ = nil;
+  id<MTLComputePipelineState> default_active_pipeline_ = nil;
+  std::size_t default_active_dispatches_ = 0;
+  std::mutex default_stream_mutex_;
 };
 
 template <typename Fn>

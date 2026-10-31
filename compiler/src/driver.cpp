@@ -240,7 +240,8 @@ CompileResult Compile(const CompileOptions& options) {
       !options.cache_dir.empty() ? options.cache_dir : ArtifactCache::DefaultCacheDirectory();
   const ArtifactCache cache(cache_root);
   const std::string cache_key =
-      cache_enabled ? ArtifactCache::ComputeKey({msl_source, muda::kVersion, "metal3.2"})
+      cache_enabled ? ArtifactCache::ComputeKey({msl_source, muda::kVersion, options.metal_standard,
+                                                 options.optimization})
                     : std::string{};
 
   bool cache_hit = false;
@@ -251,9 +252,11 @@ CompileResult Compile(const CompileOptions& options) {
     const std::string air_path_str = air_path.string();
     const std::string metallib_path_str = metallib_path.string();
 
-    const std::array<std::string_view, 9> compile_args = {
-        "xcrun", "--sdk",        "macosx", "metal",     "-std=metal3.2",
-        "-c",    metal_path_str, "-o",     air_path_str};
+    const std::string_view std_flag = MetalStandardFlag(options.metal_standard);
+    const std::string_view opt_flag = OptimizationLevelFlag(options.optimization);
+    const std::array<std::string_view, 10> compile_args = {
+        "xcrun",  "--sdk", "macosx",       "metal", std_flag,
+        opt_flag, "-c",    metal_path_str, "-o",    air_path_str};
     if (!detail::RunProcess(compile_args).succeeded()) {
       return Failure(DiagnosticCode::kMetalCompilationFailed);
     }

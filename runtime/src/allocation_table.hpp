@@ -56,6 +56,12 @@ struct AllocationRecord {
 
 class AllocationTable {
  public:
+  AllocationTable() = default;
+  AllocationTable(AllocationTable&& other) noexcept;
+  AllocationTable& operator=(AllocationTable&& other) noexcept;
+  AllocationTable(const AllocationTable&) = delete;
+  AllocationTable& operator=(const AllocationTable&) = delete;
+
   void Insert(AllocationRecord record);
   [[nodiscard]] std::optional<AllocationRecord> Remove(DeviceAddress base_address);
   [[nodiscard]] const AllocationRecord* FindContaining(DeviceAddress address) const noexcept;
@@ -68,6 +74,7 @@ class AllocationTable {
 
  private:
   std::map<DeviceAddress, AllocationRecord> records_;
+  std::atomic<std::uint64_t> epoch_{1};
 };
 
 }  // namespace muda::runtime::cudart

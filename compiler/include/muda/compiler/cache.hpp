@@ -13,12 +13,15 @@
 #include <string_view>
 #include <vector>
 
+#include "muda/compiler/types.hpp"
+
 namespace muda::compiler {
 
 struct CacheKeyInput {
   std::string_view msl_source;
   std::string_view muda_version;
-  std::string_view msl_standard = "metal3.2";
+  MetalStandard metal_standard = MetalStandard::kMetal32;
+  OptimizationLevel optimization = OptimizationLevel::kO3;
 };
 
 class ArtifactCache {

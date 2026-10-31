@@ -123,8 +123,43 @@ int main(int argc, char** argv) {
       options.libraries.emplace_back(argument.substr(2));
       continue;
     }
-    if (StartsWith(argument, "-O") || StartsWith(argument, "-std=") || argument == "-g" ||
-        argument == "-lineinfo" || argument == "--use_fast_math" ||
+    if (argument == "-O0") {
+      options.optimization = muda::compiler::OptimizationLevel::kO0;
+      continue;
+    }
+    if (argument == "-O1") {
+      options.optimization = muda::compiler::OptimizationLevel::kO1;
+      continue;
+    }
+    if (argument == "-O2") {
+      options.optimization = muda::compiler::OptimizationLevel::kO2;
+      continue;
+    }
+    if (argument == "-O3") {
+      options.optimization = muda::compiler::OptimizationLevel::kO3;
+      continue;
+    }
+    if (argument == "-Ofast" || argument == "--use_fast_math") {
+      options.optimization = muda::compiler::OptimizationLevel::kFast;
+      continue;
+    }
+    if (argument == "-std=metal3.2" || argument == "--metal-standard=3.2") {
+      options.metal_standard = muda::compiler::MetalStandard::kMetal32;
+      continue;
+    }
+    if (argument == "-std=metal3.1" || argument == "--metal-standard=3.1") {
+      options.metal_standard = muda::compiler::MetalStandard::kMetal31;
+      continue;
+    }
+    if (argument == "-std=metal3.0" || argument == "--metal-standard=3.0") {
+      options.metal_standard = muda::compiler::MetalStandard::kMetal30;
+      continue;
+    }
+    if (argument == "-std=metal2.4" || argument == "--metal-standard=2.4") {
+      options.metal_standard = muda::compiler::MetalStandard::kMetal24;
+      continue;
+    }
+    if (StartsWith(argument, "-std=") || argument == "-g" || argument == "-lineinfo" ||
         StartsWith(argument, "-arch=")) {
       continue;
     }

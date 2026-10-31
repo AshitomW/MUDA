@@ -56,13 +56,22 @@ std::string ArtifactCache::ComputeKey(const CacheKeyInput& input) noexcept {
   constexpr std::uint64_t kBasis1 = 14695981039346656037ull;
   constexpr std::uint64_t kBasis2 = 0x9e3779b97f4a7c15ull;
 
+  const std::string_view opt_flag = OptimizationLevelFlag(input.optimization);
+  const std::string_view std_flag = MetalStandardFlag(input.metal_standard);
+
   std::uint64_t h1 = FnV1a64(input.muda_version, kBasis1);
   h1 = FnV1a64("|", h1);
-  h1 = FnV1a64(input.msl_standard, h1);
+  h1 = FnV1a64(std_flag, h1);
+  h1 = FnV1a64("|", h1);
+  h1 = FnV1a64(opt_flag, h1);
   h1 = FnV1a64("|", h1);
   h1 = FnV1a64(input.msl_source, h1);
 
   std::uint64_t h2 = FnV1a64(input.msl_source, kBasis2);
+  h2 = FnV1a64("|", h2);
+  h2 = FnV1a64(std_flag, h2);
+  h2 = FnV1a64("|", h2);
+  h2 = FnV1a64(opt_flag, h2);
   h2 = FnV1a64("|", h2);
   h2 = FnV1a64(input.muda_version, h2);
 
