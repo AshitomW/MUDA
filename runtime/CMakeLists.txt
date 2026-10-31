@@ -4,9 +4,15 @@ add_library(
   src/buffer.mm
   src/cuda_runtime.mm
   src/device.mm
+  src/device_manager.mm
   src/error_state.cpp
+  src/event_manager.mm
   src/kernel.mm
   src/kernel_registry.mm
+  src/launch_engine.mm
+  src/memory_manager.mm
+  src/stream_manager.mm
+  src/transfer_manager.mm
 )
 add_library(muda::runtime ALIAS muda_runtime)
 

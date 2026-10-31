@@ -1,5 +1,6 @@
 add_library(
   muda_compiler
+  src/ast_extractor.cpp
   src/cache.cpp
   src/driver.cpp
   src/host_rewriter.cpp
@@ -7,6 +8,7 @@ add_library(
   src/process.cpp
   src/toolchain.cpp
   src/translator.cpp
+  src/type_table.cpp
 )
 add_library(muda::compiler ALIAS muda_compiler)
 
