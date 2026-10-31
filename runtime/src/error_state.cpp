@@ -41,6 +41,10 @@ const char* ErrorName(cudaError_t error) noexcept {
       return "cudaErrorInvalidConfiguration";
     case cudaErrorInvalidDevice:
       return "cudaErrorInvalidDevice";
+    case cudaErrorInvalidPitchValue:
+      return "cudaErrorInvalidPitchValue";
+    case cudaErrorSymbolNotFound:
+      return "cudaErrorSymbolNotFound";
     case cudaErrorInvalidDevicePointer:
       return "cudaErrorInvalidDevicePointer";
     case cudaErrorInvalidMemcpyDirection:
@@ -51,12 +55,18 @@ const char* ErrorName(cudaError_t error) noexcept {
       return "cudaErrorNoDevice";
     case cudaErrorInvalidResourceHandle:
       return "cudaErrorInvalidResourceHandle";
+    case cudaErrorNotReady:
+      return "cudaErrorNotReady";
+    case cudaErrorIllegalAddress:
+      return "cudaErrorIllegalAddress";
     case cudaErrorLaunchOutOfResources:
       return "cudaErrorLaunchOutOfResources";
     case cudaErrorLaunchFailure:
       return "cudaErrorLaunchFailure";
     case cudaErrorNotSupported:
       return "cudaErrorNotSupported";
+    case cudaErrorUnsupportedLimit:
+      return "cudaErrorUnsupportedLimit";
     case cudaErrorInternalError:
       return "cudaErrorInternalError";
     case cudaErrorUnknown:
@@ -79,6 +89,10 @@ const char* ErrorString(cudaError_t error) noexcept {
       return "invalid configuration argument";
     case cudaErrorInvalidDevice:
       return "invalid device ordinal";
+    case cudaErrorInvalidPitchValue:
+      return "invalid pitch argument";
+    case cudaErrorSymbolNotFound:
+      return "named symbol not found";
     case cudaErrorInvalidDevicePointer:
       return "invalid device pointer";
     case cudaErrorInvalidMemcpyDirection:
@@ -89,12 +103,18 @@ const char* ErrorString(cudaError_t error) noexcept {
       return "no CUDA-capable Metal device is detected";
     case cudaErrorInvalidResourceHandle:
       return "invalid resource handle";
+    case cudaErrorNotReady:
+      return "device not ready";
+    case cudaErrorIllegalAddress:
+      return "an illegal memory access was encountered";
     case cudaErrorLaunchOutOfResources:
       return "too many resources requested for launch";
     case cudaErrorLaunchFailure:
       return "unspecified launch failure";
     case cudaErrorNotSupported:
       return "operation not supported";
+    case cudaErrorUnsupportedLimit:
+      return "unsupported limit";
     case cudaErrorInternalError:
       return "internal error";
     case cudaErrorUnknown:

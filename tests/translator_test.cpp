@@ -103,6 +103,73 @@ int main() {
     return 1;
   }
 
-  std::cout << "translated vector_add\n";
+  // Test __device__ helper function + static __shared__ + math intrinsics + multiple kernels
+  const char* complex_source = R"CUDA(
+__device__ float clamp_val(float x, float lo, float hi) {
+  return fminf(fmaxf(fmaf(x, 1.0f, 0.0f), lo), hi);
+}
+
+__global__ void reduce_block(const float* in, float* out, int n) {
+  __shared__ float tile[256];
+  const int tid = threadIdx.x;
+  const int idx = blockIdx.x * blockDim.x + tid;
+  tile[tid] = (idx < n) ? clamp_val(in[idx], -10.0f, 10.0f) : 0.0f;
+  __syncthreads();
+  if (tid == 0) {
+    out[blockIdx.x] = tile[0];
+  }
+}
+
+__global__ void dyn_shared_kernel(const float* in, float* out, int n) {
+  extern __shared__ float dyn_buf[];
+  const int tid = threadIdx.x;
+  dyn_buf[tid] = in[tid];
+  __syncthreads();
+  out[tid] = dyn_buf[tid];
+}
+)CUDA";
+
+  const muda::compiler::TranslationResult complex_res =
+      muda::compiler::TranslateCudaToMsl(complex_source);
+  if (!complex_res.ok() || complex_res.kernels.size() != 2) {
+    std::cerr << "complex multi-kernel translation failed [" << complex_res.diagnostic_id()
+              << "]: " << complex_res.error() << "\n";
+    return 1;
+  }
+  if (complex_res.msl.find("inline float clamp_val(") == std::string::npos ||
+      complex_res.msl.find("threadgroup float tile[256];") == std::string::npos ||
+      complex_res.msl.find("threadgroup float* dyn_buf [[threadgroup(0)]]") == std::string::npos ||
+      complex_res.msl.find("min(max(fma(") == std::string::npos) {
+    std::cerr << "complex MSL missing expected lowered constructs:\n" << complex_res.msl << "\n";
+    return 1;
+  }
+
+  // Rejection tests for recursion, function pointers, and dynamic parallelism
+  const muda::compiler::TranslationResult recursive_fn = muda::compiler::TranslateCudaToMsl(
+      "__device__ int fact(int n) { return n <= 1 ? 1 : n * fact(n - 1); }\n"
+      "__global__ void k(int* out) { out[0] = fact(5); }");
+  if (recursive_fn.ok() ||
+      recursive_fn.code != muda::compiler::DiagnosticCode::kRecursionUnsupported) {
+    std::cerr << "recursive device function should fail with ALY-C-101\n";
+    return 1;
+  }
+
+  const muda::compiler::TranslationResult fn_ptr =
+      muda::compiler::TranslateCudaToMsl("__global__ void k(void (*fn)(int), int* out) {}");
+  if (fn_ptr.ok() || fn_ptr.code != muda::compiler::DiagnosticCode::kFunctionPointerUnsupported) {
+    std::cerr << "function pointer parameter should fail with ALY-C-102\n";
+    return 1;
+  }
+
+  const muda::compiler::TranslationResult dyn_par = muda::compiler::TranslateCudaToMsl(
+      "__global__ void child() {}\n"
+      "__global__ void parent() { child<<<1, 1>>>(); }");
+  if (dyn_par.ok() ||
+      dyn_par.code != muda::compiler::DiagnosticCode::kDynamicParallelismUnsupported) {
+    std::cerr << "dynamic parallelism should fail with ALY-C-106\n";
+    return 1;
+  }
+
+  std::cout << "translated vector_add and verified language constructs\n";
   return 0;
 }

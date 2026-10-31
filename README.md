@@ -30,5 +30,25 @@ pieces where practical, and report clear errors for what cannot run.
 
 ## Status
 
-Early prototype. MUDA can translate and run a simple vector-add kernel on Apple
-Silicon. It is not generally usable yet.
+Supported capabilities:
+- **Compiler (`mudac`)**: End-to-end compilation of `.cu` sources to native macOS executables, object files (`-c`), Metal Shading Language (`-S`), or `.metallib` (`--emit-metallib`). Supports multi-kernel translation units, `__device__` helper functions, static and dynamic `__shared__` memory, `__syncthreads()`, FP32 math intrinsics, MMIR validation, content-addressed artifact caching (`~/.cache/muda/v1`), and deterministic `ALY-*` diagnostics.
+- **Runtime (`libmuda_runtime`)**: Unified-memory allocation (`cudaMalloc`, `cudaMallocManaged`, `cudaMallocHost`, `cudaMallocPitch`), 1D/2D synchronous and asynchronous copies/memset, generation-validated streams and events (`MTLCommandQueue` / `MTLSharedEvent`), device property and pointer queries, and embedded `.metallib` kernel registration and launch (`<<<...>>>` and `cudaLaunchKernel`).
+- **Verification**: 10-kernel numerical parity corpus and Apple Silicon GPU benchmark harness.
+
+## Quick Start
+
+```bash
+# Configure, build, and run all tests
+cmake --preset release
+cmake --build --preset release
+ctest --preset release --output-on-failure
+
+# Compile and run a standalone .cu program
+./build/release/tools/mudac samples/vector_add.cu -o /tmp/vector_add
+/tmp/vector_add
+
+# Run the GPU benchmark suite
+./build/release/benchmarks/runtime_bench
+```
+
+See [docs/EXAMPLES.md](docs/EXAMPLES.md) for detailed usage, working CUDA examples, Metal Shading Language inspection, stream/event examples, and benchmark documentation.

@@ -17,7 +17,7 @@ target_compile_definitions(translator_test PRIVATE MUDA_SOURCE_DIR="${PROJECT_SO
 add_test(NAME translator_test COMMAND translator_test)
 
 add_executable(compiler_test compiler_test.cpp)
-target_link_libraries(compiler_test PRIVATE muda::compiler muda_warnings)
+target_link_libraries(compiler_test PRIVATE muda::compiler muda::runtime muda_warnings)
 target_compile_definitions(compiler_test PRIVATE MUDA_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
 add_test(NAME compiler_test COMMAND compiler_test)
 
@@ -26,7 +26,12 @@ target_link_libraries(vector_add_test PRIVATE muda::compiler muda::runtime muda_
 target_compile_definitions(vector_add_test PRIVATE MUDA_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
 add_test(NAME vector_add_test COMMAND vector_add_test)
 
-set_tests_properties(compiler_test vector_add_test PROPERTIES SKIP_RETURN_CODE 77)
+add_executable(corpus_test corpus_test.cpp)
+target_link_libraries(corpus_test PRIVATE muda::compiler muda::runtime muda_warnings)
+target_compile_definitions(corpus_test PRIVATE MUDA_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+add_test(NAME corpus_test COMMAND corpus_test)
+
+set_tests_properties(compiler_test vector_add_test corpus_test PROPERTIES SKIP_RETURN_CODE 77)
 
 add_test(NAME mudac_version COMMAND mudac --version)
 add_test(NAME muda_version COMMAND muda version)
