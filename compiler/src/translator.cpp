@@ -1,6 +1,6 @@
 /**
  * @file translator.cpp
- * @brief Implements CUDA-to-MSL translation.
+ * @brief Implements CUDA-to-MMIR extraction and MSL translation.
  */
 
 #include "muda/compiler/translator.hpp"
@@ -14,6 +14,8 @@
 #include <utility>
 #include <vector>
 
+#include "muda/compiler/mmir.hpp"
+
 namespace muda::compiler {
 namespace {
 
@@ -22,40 +24,55 @@ struct TypeMappingEntry {
   DataType type;
 };
 
-constexpr std::array<TypeMappingEntry, 37> kTypeTable = {{
+constexpr std::array<TypeMappingEntry, 45> kTypeTable = {{
     {"bool", {ScalarType::kBool, VectorWidth::k1}},
     {"char", {ScalarType::kInt8, VectorWidth::k1}},
     {"signed char", {ScalarType::kInt8, VectorWidth::k1}},
+    {"int8_t", {ScalarType::kInt8, VectorWidth::k1}},
     {"uchar", {ScalarType::kUInt8, VectorWidth::k1}},
     {"unsigned char", {ScalarType::kUInt8, VectorWidth::k1}},
+    {"uint8_t", {ScalarType::kUInt8, VectorWidth::k1}},
     {"short", {ScalarType::kInt16, VectorWidth::k1}},
+    {"int16_t", {ScalarType::kInt16, VectorWidth::k1}},
     {"ushort", {ScalarType::kUInt16, VectorWidth::k1}},
     {"unsigned short", {ScalarType::kUInt16, VectorWidth::k1}},
+    {"uint16_t", {ScalarType::kUInt16, VectorWidth::k1}},
     {"int", {ScalarType::kInt32, VectorWidth::k1}},
+    {"int32_t", {ScalarType::kInt32, VectorWidth::k1}},
     {"int2", {ScalarType::kInt32, VectorWidth::k2}},
     {"int3", {ScalarType::kInt32, VectorWidth::k3}},
     {"int4", {ScalarType::kInt32, VectorWidth::k4}},
     {"uint", {ScalarType::kUInt32, VectorWidth::k1}},
     {"unsigned", {ScalarType::kUInt32, VectorWidth::k1}},
     {"unsigned int", {ScalarType::kUInt32, VectorWidth::k1}},
+    {"uint32_t", {ScalarType::kUInt32, VectorWidth::k1}},
     {"uint2", {ScalarType::kUInt32, VectorWidth::k2}},
     {"uint3", {ScalarType::kUInt32, VectorWidth::k3}},
     {"uint4", {ScalarType::kUInt32, VectorWidth::k4}},
     {"long", {ScalarType::kInt64, VectorWidth::k1}},
     {"long long", {ScalarType::kInt64, VectorWidth::k1}},
+    {"int64_t", {ScalarType::kInt64, VectorWidth::k1}},
+    {"ptrdiff_t", {ScalarType::kInt64, VectorWidth::k1}},
     {"long2", {ScalarType::kInt64, VectorWidth::k2}},
     {"long3", {ScalarType::kInt64, VectorWidth::k3}},
     {"long4", {ScalarType::kInt64, VectorWidth::k4}},
     {"ulong", {ScalarType::kUInt64, VectorWidth::k1}},
     {"unsigned long", {ScalarType::kUInt64, VectorWidth::k1}},
     {"unsigned long long", {ScalarType::kUInt64, VectorWidth::k1}},
+    {"uint64_t", {ScalarType::kUInt64, VectorWidth::k1}},
+    {"size_t", {ScalarType::kUInt64, VectorWidth::k1}},
     {"ulong2", {ScalarType::kUInt64, VectorWidth::k2}},
     {"ulong3", {ScalarType::kUInt64, VectorWidth::k3}},
     {"ulong4", {ScalarType::kUInt64, VectorWidth::k4}},
     {"half", {ScalarType::kFloat16, VectorWidth::k1}},
+    {"__half", {ScalarType::kFloat16, VectorWidth::k1}},
     {"half2", {ScalarType::kFloat16, VectorWidth::k2}},
+    {"__half2", {ScalarType::kFloat16, VectorWidth::k2}},
     {"half3", {ScalarType::kFloat16, VectorWidth::k3}},
     {"half4", {ScalarType::kFloat16, VectorWidth::k4}},
+}};
+
+constexpr std::array<TypeMappingEntry, 4> kFloatTypeTable = {{
     {"float", {ScalarType::kFloat32, VectorWidth::k1}},
     {"float2", {ScalarType::kFloat32, VectorWidth::k2}},
     {"float3", {ScalarType::kFloat32, VectorWidth::k3}},
@@ -74,11 +91,46 @@ constexpr std::array<BuiltinMappingEntry, 4> kBuiltinTable = {{
     {"gridDim", "threadgroups_per_grid"},
 }};
 
-constexpr std::array<std::string_view, 20> kUnsupportedConstructs = {{
-    "__shared__", "__device__",  "__constant__",   "__managed__",      "cooperative_groups",
-    "atomicAdd",  "atomicSub",   "atomicCAS",      "atomicExch",       "atomicMin",
-    "atomicMax",  "atomicInc",   "atomicDec",      "atomicAnd",        "atomicOr",
-    "atomicXor",  "__shfl_sync", "__shfl_up_sync", "__shfl_down_sync", "printf",
+constexpr std::array<BuiltinMappingEntry, 18> kMathIntrinsicTable = {{
+    {"fmaf", "fma"},
+    {"__fmaf_rn", "fma"},
+    {"sqrtf", "sqrt"},
+    {"__fsqrt_rn", "sqrt"},
+    {"rsqrtf", "rsqrt"},
+    {"fabsf", "abs"},
+    {"fminf", "min"},
+    {"fmaxf", "max"},
+    {"expf", "exp"},
+    {"__expf", "fast::exp"},
+    {"logf", "log"},
+    {"__logf", "fast::log"},
+    {"sinf", "sin"},
+    {"__sinf", "fast::sin"},
+    {"cosf", "cos"},
+    {"__cosf", "fast::cos"},
+    {"tanf", "tan"},
+    {"powf", "pow"},
+}};
+
+constexpr std::array<std::string_view, 18> kUnsupportedConstructs = {{
+    "__constant__",
+    "__managed__",
+    "cooperative_groups",
+    "atomicAdd",
+    "atomicSub",
+    "atomicCAS",
+    "atomicExch",
+    "atomicMin",
+    "atomicMax",
+    "atomicInc",
+    "atomicDec",
+    "atomicAnd",
+    "atomicOr",
+    "atomicXor",
+    "__shfl_sync",
+    "__shfl_up_sync",
+    "__shfl_down_sync",
+    "printf",
 }};
 
 bool IsIdentifierStart(char value) noexcept {
@@ -186,7 +238,7 @@ std::size_t FindMatching(std::string_view text, std::size_t open, char open_char
 std::vector<std::string_view> SplitParameters(std::string_view text) {
   std::vector<std::string_view> result;
   const std::string_view trimmed = Trim(text);
-  if (trimmed.empty()) {
+  if (trimmed.empty() || trimmed == "void") {
     return result;
   }
 
@@ -262,6 +314,11 @@ std::optional<DataType> ResolveCudaType(std::string_view spelling) noexcept {
       return entry.type;
     }
   }
+  for (const TypeMappingEntry& entry : kFloatTypeTable) {
+    if (entry.cuda_spelling == spelling) {
+      return entry.type;
+    }
+  }
   return std::nullopt;
 }
 
@@ -274,6 +331,9 @@ ParsedParameter ParseParameter(std::string_view text, std::size_t index) {
   const std::string normalized = NormalizeSpace(text);
   if (normalized.empty()) {
     return {DiagnosticCode::kEmptyKernelParameter, {}};
+  }
+  if (normalized.find("(*") != std::string::npos) {
+    return {DiagnosticCode::kFunctionPointerUnsupported, {}};
   }
 
   std::size_t declaration_end = normalized.size();
@@ -338,11 +398,119 @@ std::string_view BuiltinReplacement(std::string_view word) noexcept {
   return {};
 }
 
-std::string TranslateBuiltins(std::string_view body) {
+std::string_view MathIntrinsicReplacement(std::string_view word) noexcept {
+  for (const BuiltinMappingEntry& entry : kMathIntrinsicTable) {
+    if (entry.cuda_name == word) {
+      return entry.msl_name;
+    }
+  }
+  return {};
+}
+
+DiagnosticCode ExtractSharedMemoryAndLowerBody(std::string_view raw_body,
+                                               std::vector<mmir::SharedAllocation>* out_shared,
+                                               std::string* out_lowered_body) {
+  std::string body_without_shared;
+  body_without_shared.reserve(raw_body.size());
+
+  std::size_t cursor = 0;
+  while (cursor < raw_body.size()) {
+    // Check for extern __shared__ or __shared__ declaration
+    if (IsIdentifierStart(raw_body[cursor])) {
+      const std::size_t word_start = cursor;
+      std::size_t word_end = cursor + 1;
+      while (word_end < raw_body.size() && IsIdentifierChar(raw_body[word_end])) {
+        ++word_end;
+      }
+      const std::string_view first_word = raw_body.substr(word_start, word_end - word_start);
+
+      bool is_extern_shared = false;
+      std::size_t after_shared = word_end;
+      if (first_word == "extern") {
+        std::size_t next = word_end;
+        while (next < raw_body.size() && IsSpace(raw_body[next])) {
+          ++next;
+        }
+        std::size_t next_end = next;
+        while (next_end < raw_body.size() && IsIdentifierChar(raw_body[next_end])) {
+          ++next_end;
+        }
+        if (raw_body.substr(next, next_end - next) == "__shared__") {
+          is_extern_shared = true;
+          after_shared = next_end;
+        }
+      }
+
+      if (first_word == "__shared__" || is_extern_shared) {
+        if (out_shared == nullptr) {
+          return DiagnosticCode::kUnsupportedConstruct;
+        }
+        const std::size_t semi = raw_body.find(';', after_shared);
+        if (semi == std::string_view::npos) {
+          return DiagnosticCode::kInvalidSharedMemoryDeclaration;
+        }
+        const std::string_view decl_text = Trim(raw_body.substr(after_shared, semi - after_shared));
+        const std::size_t bracket_open = decl_text.find('[');
+        const std::size_t bracket_close = decl_text.rfind(']');
+        if (bracket_open == std::string_view::npos || bracket_close == std::string_view::npos ||
+            bracket_close < bracket_open) {
+          return DiagnosticCode::kInvalidSharedMemoryDeclaration;
+        }
+
+        const std::string_view count_expr =
+            Trim(decl_text.substr(bracket_open + 1, bracket_close - bracket_open - 1));
+        if (is_extern_shared && !count_expr.empty()) {
+          return DiagnosticCode::kInvalidSharedMemoryDeclaration;
+        }
+        if (!is_extern_shared && count_expr.empty()) {
+          return DiagnosticCode::kInvalidSharedMemoryDeclaration;
+        }
+
+        const std::string_view type_and_name = Trim(decl_text.substr(0, bracket_open));
+        std::size_t name_end = type_and_name.size();
+        while (name_end > 0 && IsSpace(type_and_name[name_end - 1])) {
+          --name_end;
+        }
+        std::size_t name_start = name_end;
+        while (name_start > 0 && IsIdentifierChar(type_and_name[name_start - 1])) {
+          --name_start;
+        }
+        if (name_start == name_end) {
+          return DiagnosticCode::kInvalidSharedMemoryDeclaration;
+        }
+
+        const std::string type_str = NormalizeSpace(type_and_name.substr(0, name_start));
+        const std::optional<DataType> elem_type = ResolveCudaType(type_str);
+        if (!elem_type.has_value()) {
+          return DiagnosticCode::kUnsupportedParameterType;
+        }
+
+        out_shared->push_back(mmir::SharedAllocation{
+            .name = std::string(type_and_name.substr(name_start, name_end - name_start)),
+            .element_type = *elem_type,
+            .count_expression = std::string(count_expr),
+            .is_dynamic = is_extern_shared,
+        });
+
+        cursor = semi + 1;
+        continue;
+      }
+    }
+
+    body_without_shared.push_back(raw_body[cursor]);
+    ++cursor;
+  }
+
   std::string result;
-  result.reserve(body.size());
+  const std::string_view body = Trim(body_without_shared);
+  result.reserve(body.size() + 64);
 
   for (std::size_t index = 0; index < body.size();) {
+    if (body[index] == '<' && index + 2 < body.size() && body[index + 1] == '<' &&
+        body[index + 2] == '<') {
+      return DiagnosticCode::kDynamicParallelismUnsupported;
+    }
+
     if (!IsIdentifierStart(body[index])) {
       result.push_back(body[index]);
       ++index;
@@ -355,20 +523,29 @@ std::string TranslateBuiltins(std::string_view body) {
       ++index;
     }
     const std::string_view word = body.substr(start, index - start);
-    const std::string_view replacement = BuiltinReplacement(word);
 
+    for (const std::string_view unsupported : kUnsupportedConstructs) {
+      if (word == unsupported) {
+        return DiagnosticCode::kUnsupportedConstruct;
+      }
+    }
+    if (word == "double") {
+      return DiagnosticCode::kUnsupportedConstruct;
+    }
+
+    const std::string_view builtin_rep = BuiltinReplacement(word);
     std::size_t next = index;
     while (next < body.size() && IsSpace(body[next])) {
       ++next;
     }
 
-    if (!replacement.empty() && next < body.size() && body[next] == '.') {
+    if (!builtin_rep.empty() && next < body.size() && body[next] == '.') {
       std::size_t axis = next + 1;
       while (axis < body.size() && IsSpace(body[axis])) {
         ++axis;
       }
       if (axis < body.size() && (body[axis] == 'x' || body[axis] == 'y' || body[axis] == 'z')) {
-        result.append(replacement);
+        result.append(builtin_rep);
         result.push_back('.');
         result.push_back(body[axis]);
         index = axis + 1;
@@ -385,92 +562,25 @@ std::string TranslateBuiltins(std::string_view body) {
       }
     }
 
+    if (word == "__syncwarp" && next < body.size() && body[next] == '(') {
+      const std::size_t close = FindMatching(body, next, '(', ')');
+      if (close != std::string_view::npos) {
+        result.append("simdgroup_barrier(mem_flags::mem_threadgroup)");
+        index = close + 1;
+        continue;
+      }
+    }
+
+    const std::string_view math_rep = MathIntrinsicReplacement(word);
+    if (!math_rep.empty() && next < body.size() && body[next] == '(') {
+      result.append(math_rep);
+      continue;
+    }
+
     result.append(word);
   }
 
-  return result;
-}
-
-TranslationResult Failure(DiagnosticCode code) noexcept {
-  TranslationResult result;
-  result.code = code;
-  return result;
-}
-
-struct KernelSlice {
-  DiagnosticCode code = DiagnosticCode::kOk;
-  std::string name;
-  std::string_view parameter_list;
-  std::string_view body;
-};
-
-KernelSlice LocateKernelSlice(std::string_view source) {
-  constexpr std::string_view kMarker = "__global__";
-  const std::size_t marker_position = source.find(kMarker);
-  if (marker_position == std::string_view::npos) {
-    return {DiagnosticCode::kMissingGlobalKernel, {}, {}, {}};
-  }
-  const std::size_t after_marker = marker_position + kMarker.size();
-  if (source.find(kMarker, after_marker) != std::string_view::npos) {
-    return {DiagnosticCode::kMultipleKernelsUnsupported, {}, {}, {}};
-  }
-
-  const std::size_t open = source.find('(', after_marker);
-  const std::size_t semicolon = source.find(';', after_marker);
-  if (open == std::string_view::npos || (semicolon != std::string_view::npos && semicolon < open)) {
-    return {DiagnosticCode::kMalformedKernelDeclaration, {}, {}, {}};
-  }
-
-  const std::size_t close = FindMatching(source, open, '(', ')');
-  if (close == std::string_view::npos) {
-    return {DiagnosticCode::kUnterminatedParameterList, {}, {}, {}};
-  }
-
-  std::size_t name_end = open;
-  while (name_end > 0 && IsSpace(source[name_end - 1])) {
-    --name_end;
-  }
-  std::size_t name_start = name_end;
-  while (name_start > 0 && IsIdentifierChar(source[name_start - 1])) {
-    --name_start;
-  }
-  if (name_start == name_end) {
-    return {DiagnosticCode::kMissingKernelName, {}, {}, {}};
-  }
-
-  const std::string return_type =
-      NormalizeSpace(source.substr(after_marker, name_start - after_marker));
-  if (return_type != "void") {
-    return {DiagnosticCode::kNonVoidKernelReturn, {}, {}, {}};
-  }
-
-  std::size_t body_open = close + 1;
-  while (body_open < source.size() && IsSpace(source[body_open])) {
-    ++body_open;
-  }
-  if (body_open >= source.size() || source[body_open] != '{') {
-    return {DiagnosticCode::kMissingKernelBody, {}, {}, {}};
-  }
-
-  const std::size_t body_close = FindMatching(source, body_open, '{', '}');
-  if (body_close == std::string_view::npos) {
-    return {DiagnosticCode::kUnterminatedKernelBody, {}, {}, {}};
-  }
-
-  return {
-      DiagnosticCode::kOk,
-      std::string(source.substr(name_start, name_end - name_start)),
-      source.substr(open + 1, close - open - 1),
-      source.substr(body_open + 1, body_close - body_open - 1),
-  };
-}
-
-DiagnosticCode ValidateKernelBody(std::string_view body) noexcept {
-  for (const std::string_view token : kUnsupportedConstructs) {
-    if (body.find(token) != std::string_view::npos) {
-      return DiagnosticCode::kUnsupportedConstruct;
-    }
-  }
+  *out_lowered_body = std::move(result);
   return DiagnosticCode::kOk;
 }
 
@@ -488,72 +598,226 @@ DiagnosticCode ParseParameterList(std::string_view parameter_list,
   return DiagnosticCode::kOk;
 }
 
-std::string EmitKernelMsl(const TranslatedKernel& kernel, std::string_view body) {
-  std::string msl;
-  msl.reserve(body.size() + 512);
-  msl += "#include <metal_stdlib>\n";
-  msl += "using namespace metal;\n\n";
-  msl += "kernel void ";
-  msl += kernel.name;
-  msl += "(\n";
+TranslationResult Failure(DiagnosticCode code) noexcept {
+  TranslationResult result;
+  result.code = code;
+  return result;
+}
 
-  for (const KernelParameter& parameter : kernel.parameters) {
-    msl += "    ";
-    msl += AddressSpaceName(parameter.address_space);
-    msl.push_back(' ');
-    if (parameter.is_pointer()) {
-      if (parameter.is_const()) {
-        msl += "const ";
+enum class QualifierKind : std::uint8_t {
+  kGlobal,
+  kDevice,
+};
+
+struct RawFunctionSlice {
+  QualifierKind kind = QualifierKind::kGlobal;
+  std::string return_type;
+  std::string name;
+  std::string_view parameter_list;
+  std::string_view body;
+};
+
+DiagnosticCode ExtractFunctionsFromSource(std::string_view source,
+                                          std::vector<RawFunctionSlice>* out_slices) {
+  std::size_t cursor = 0;
+  while (cursor < source.size()) {
+    if (source[cursor] == '/' && cursor + 1 < source.size() && source[cursor + 1] == '/') {
+      const std::size_t nl = source.find('\n', cursor + 2);
+      if (nl == std::string_view::npos) {
+        break;
       }
-      msl += parameter.metal_type();
-      msl += "* ";
-    } else {
-      msl += parameter.metal_type();
-      msl += "& ";
+      cursor = nl + 1;
+      continue;
     }
-    msl += parameter.name;
-    msl += " [[buffer(";
-    msl += std::to_string(parameter.buffer_index);
-    msl += ")]],\n";
+    if (source[cursor] == '/' && cursor + 1 < source.size() && source[cursor + 1] == '*') {
+      const std::size_t end_c = source.find("*/", cursor + 2);
+      if (end_c == std::string_view::npos) {
+        break;
+      }
+      cursor = end_c + 2;
+      continue;
+    }
+    if (source[cursor] == '"' || source[cursor] == '\'') {
+      const char quote = source[cursor++];
+      while (cursor < source.size()) {
+        const char ch = source[cursor++];
+        if (ch == '\\' && cursor < source.size()) {
+          ++cursor;
+          continue;
+        }
+        if (ch == quote) {
+          break;
+        }
+      }
+      continue;
+    }
+
+    if (!IsIdentifierStart(source[cursor])) {
+      ++cursor;
+      continue;
+    }
+
+    const std::size_t word_start = cursor;
+    ++cursor;
+    while (cursor < source.size() && IsIdentifierChar(source[cursor])) {
+      ++cursor;
+    }
+    const std::string_view word = source.substr(word_start, cursor - word_start);
+
+    if (word != "__global__" && word != "__device__") {
+      continue;
+    }
+
+    const QualifierKind kind =
+        (word == "__global__") ? QualifierKind::kGlobal : QualifierKind::kDevice;
+
+    const std::size_t open = source.find('(', cursor);
+    const std::size_t semicolon = source.find(';', cursor);
+    if (open == std::string_view::npos ||
+        (semicolon != std::string_view::npos && semicolon < open)) {
+      if (kind == QualifierKind::kGlobal) {
+        return DiagnosticCode::kMalformedKernelDeclaration;
+      }
+      // __device__ variable declaration inside or outside function; let kernel body validation
+      // handle it if inside a kernel, or reject global __device__ variable.
+      return DiagnosticCode::kUnsupportedConstruct;
+    }
+
+    const std::size_t close = FindMatching(source, open, '(', ')');
+    if (close == std::string_view::npos) {
+      return DiagnosticCode::kUnterminatedParameterList;
+    }
+
+    std::size_t name_end = open;
+    while (name_end > cursor && IsSpace(source[name_end - 1])) {
+      --name_end;
+    }
+    std::size_t name_start = name_end;
+    while (name_start > cursor && IsIdentifierChar(source[name_start - 1])) {
+      --name_start;
+    }
+    if (name_start == name_end) {
+      return DiagnosticCode::kMissingKernelName;
+    }
+
+    std::string return_type = NormalizeSpace(source.substr(cursor, name_start - cursor));
+    RemoveIdentifier(return_type, "__host__");
+    RemoveIdentifier(return_type, "__device__");
+    RemoveIdentifier(return_type, "__forceinline__");
+    RemoveIdentifier(return_type, "__noinline__");
+    RemoveIdentifier(return_type, "inline");
+    RemoveIdentifier(return_type, "static");
+    RemoveIdentifier(return_type, "constexpr");
+
+    if (kind == QualifierKind::kGlobal && return_type != "void") {
+      return DiagnosticCode::kNonVoidKernelReturn;
+    }
+
+    std::size_t body_open = close + 1;
+    while (body_open < source.size() && IsSpace(source[body_open])) {
+      ++body_open;
+    }
+    if (body_open >= source.size() || source[body_open] != '{') {
+      return DiagnosticCode::kMissingKernelBody;
+    }
+
+    const std::size_t body_close = FindMatching(source, body_open, '{', '}');
+    if (body_close == std::string_view::npos) {
+      return DiagnosticCode::kUnterminatedKernelBody;
+    }
+
+    out_slices->push_back(RawFunctionSlice{
+        .kind = kind,
+        .return_type = std::move(return_type),
+        .name = std::string(source.substr(name_start, name_end - name_start)),
+        .parameter_list = source.substr(open + 1, close - open - 1),
+        .body = source.substr(body_open + 1, body_close - body_open - 1),
+    });
+
+    cursor = body_close + 1;
   }
 
-  msl += "    uint3 thread_position_in_threadgroup [[thread_position_in_threadgroup]],\n";
-  msl += "    uint3 threadgroup_position_in_grid [[threadgroup_position_in_grid]],\n";
-  msl += "    uint3 threads_per_threadgroup [[threads_per_threadgroup]],\n";
-  msl += "    uint3 threadgroups_per_grid [[threadgroups_per_grid]])\n";
-  msl += "{\n";
-  msl += "  ";
-  msl += TranslateBuiltins(Trim(body));
-  msl += "\n}\n";
-  return msl;
+  return DiagnosticCode::kOk;
 }
 
 }  // namespace
 
 TranslationResult TranslateCudaToMsl(std::string_view source) {
-  KernelSlice slice = LocateKernelSlice(source);
-  if (slice.code != DiagnosticCode::kOk) {
-    return Failure(slice.code);
+  std::vector<RawFunctionSlice> slices;
+  const DiagnosticCode extract_status = ExtractFunctionsFromSource(source, &slices);
+  if (extract_status != DiagnosticCode::kOk) {
+    return Failure(extract_status);
   }
 
-  const DiagnosticCode body_status = ValidateKernelBody(slice.body);
-  if (body_status != DiagnosticCode::kOk) {
-    return Failure(body_status);
+  mmir::Module module;
+  for (const RawFunctionSlice& slice : slices) {
+    if (slice.kind == QualifierKind::kDevice) {
+      mmir::DeviceFunction dev_fn;
+      dev_fn.name = slice.name;
+      if (slice.return_type == "void") {
+        dev_fn.returns_void = true;
+      } else {
+        const std::optional<DataType> ret_type = ResolveCudaType(slice.return_type);
+        if (!ret_type.has_value()) {
+          return Failure(DiagnosticCode::kUnsupportedParameterType);
+        }
+        dev_fn.return_type = *ret_type;
+      }
+
+      const DiagnosticCode param_status =
+          ParseParameterList(slice.parameter_list, &dev_fn.parameters);
+      if (param_status != DiagnosticCode::kOk) {
+        return Failure(param_status);
+      }
+
+      const DiagnosticCode body_status =
+          ExtractSharedMemoryAndLowerBody(slice.body, nullptr, &dev_fn.lowered_body);
+      if (body_status != DiagnosticCode::kOk) {
+        return Failure(body_status);
+      }
+      module.device_functions.push_back(std::move(dev_fn));
+    } else {
+      mmir::KernelFunction kernel_fn;
+      kernel_fn.name = slice.name;
+      kernel_fn.msl_name = slice.name;
+
+      const DiagnosticCode param_status =
+          ParseParameterList(slice.parameter_list, &kernel_fn.parameters);
+      if (param_status != DiagnosticCode::kOk) {
+        return Failure(param_status);
+      }
+
+      const DiagnosticCode body_status = ExtractSharedMemoryAndLowerBody(
+          slice.body, &kernel_fn.shared_allocations, &kernel_fn.lowered_body);
+      if (body_status != DiagnosticCode::kOk) {
+        return Failure(body_status);
+      }
+      module.kernels.push_back(std::move(kernel_fn));
+    }
   }
 
-  TranslatedKernel kernel;
-  kernel.name = std::move(slice.name);
-
-  const DiagnosticCode param_status = ParseParameterList(slice.parameter_list, &kernel.parameters);
-  if (param_status != DiagnosticCode::kOk) {
-    return Failure(param_status);
+  const DiagnosticCode verify_status = mmir::VerifyModule(module);
+  if (verify_status != DiagnosticCode::kOk) {
+    return Failure(verify_status);
   }
-
-  kernel.msl = EmitKernelMsl(kernel, slice.body);
 
   TranslationResult result;
   result.code = DiagnosticCode::kOk;
-  result.kernel = std::move(kernel);
+  result.msl = mmir::EmitMslModule(module);
+
+  result.kernels.reserve(module.kernels.size());
+  for (const mmir::KernelFunction& kernel_fn : module.kernels) {
+    TranslatedKernel tk;
+    tk.name = kernel_fn.name;
+    tk.msl_name = kernel_fn.msl_name;
+    tk.parameters = kernel_fn.parameters;
+    tk.uses_dynamic_shared_memory = kernel_fn.uses_dynamic_shared_memory();
+    tk.msl = mmir::EmitMslKernel(module, kernel_fn);
+    result.kernels.push_back(std::move(tk));
+  }
+
+  result.kernel = result.kernels.front();
+  result.kernel.msl = result.msl;
   return result;
 }
 

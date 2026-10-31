@@ -75,6 +75,17 @@ enum class ParameterBindingKind : std::uint8_t {
 };
 
 /**
+ * @brief Target artifact format for a compilation invocation.
+ */
+enum class OutputKind : std::uint8_t {
+  kAuto,
+  kMetallib,
+  kMslSource,
+  kObject,
+  kExecutable,
+};
+
+/**
  * @brief Intermediate file retention policy during compilation.
  */
 enum class IntermediatePolicy : std::uint8_t {
@@ -83,7 +94,7 @@ enum class IntermediatePolicy : std::uint8_t {
 };
 
 /**
- * @brief Stable compiler and driver diagnostic codes (ALY-C* / ALY-M* / ALY-T*).
+ * @brief Stable compiler and driver diagnostic codes (ALY-C* / ALY-I* / ALY-M* / ALY-T*).
  */
 enum class DiagnosticCode : std::uint16_t {
   kOk = 0,
@@ -99,6 +110,11 @@ enum class DiagnosticCode : std::uint16_t {
   kEmptyKernelParameter,
   kMissingParameterName,
   kUnsupportedParameterType,
+  kRecursionUnsupported,
+  kFunctionPointerUnsupported,
+  kDynamicParallelismUnsupported,
+  kInvalidSharedMemoryDeclaration,
+  kMalformedLaunchConfiguration,
   kNoInputFile,
   kToolchainNotFound,
   kCannotOpenInput,
@@ -106,6 +122,8 @@ enum class DiagnosticCode : std::uint16_t {
   kCannotWriteMetalSource,
   kMetalCompilationFailed,
   kMetallibLinkFailed,
+  kHostCompilationFailed,
+  kHostLinkFailed,
 };
 
 [[nodiscard]] constexpr std::size_t ScalarByteSize(ScalarType scalar) noexcept {
@@ -179,6 +197,34 @@ enum class DiagnosticCode : std::uint16_t {
   return "";
 }
 
+[[nodiscard]] constexpr std::string_view CudaTypeName(DataType type) noexcept {
+  switch (type.scalar) {
+    case ScalarType::kBool:
+      return type.width == VectorWidth::k1 ? "bool" : "";
+    case ScalarType::kInt8:
+      return type.width == VectorWidth::k1 ? "signed char" : "";
+    case ScalarType::kUInt8:
+      return type.width == VectorWidth::k1 ? "unsigned char" : "";
+    case ScalarType::kInt16:
+      return type.width == VectorWidth::k1 ? "short" : "";
+    case ScalarType::kUInt16:
+      return type.width == VectorWidth::k1 ? "unsigned short" : "";
+    case ScalarType::kInt32:
+      return SelectVectorSpelling(type.width, "int", "int2", "int3", "int4");
+    case ScalarType::kUInt32:
+      return SelectVectorSpelling(type.width, "unsigned int", "uint2", "uint3", "uint4");
+    case ScalarType::kInt64:
+      return SelectVectorSpelling(type.width, "long long", "long2", "long3", "long4");
+    case ScalarType::kUInt64:
+      return SelectVectorSpelling(type.width, "unsigned long long", "ulong2", "ulong3", "ulong4");
+    case ScalarType::kFloat16:
+      return SelectVectorSpelling(type.width, "half", "half2", "half3", "half4");
+    case ScalarType::kFloat32:
+      return SelectVectorSpelling(type.width, "float", "float2", "float3", "float4");
+  }
+  return "";
+}
+
 [[nodiscard]] constexpr std::string_view AddressSpaceName(AddressSpace space) noexcept {
   switch (space) {
     case AddressSpace::kDevice:
@@ -221,6 +267,16 @@ enum class DiagnosticCode : std::uint16_t {
       return "ALY-C011";
     case DiagnosticCode::kUnsupportedParameterType:
       return "ALY-C012";
+    case DiagnosticCode::kRecursionUnsupported:
+      return "ALY-C-101";
+    case DiagnosticCode::kFunctionPointerUnsupported:
+      return "ALY-C-102";
+    case DiagnosticCode::kDynamicParallelismUnsupported:
+      return "ALY-C-106";
+    case DiagnosticCode::kInvalidSharedMemoryDeclaration:
+      return "ALY-I-201";
+    case DiagnosticCode::kMalformedLaunchConfiguration:
+      return "ALY-C013";
     case DiagnosticCode::kNoInputFile:
       return "ALY-T001";
     case DiagnosticCode::kToolchainNotFound:
@@ -235,6 +291,10 @@ enum class DiagnosticCode : std::uint16_t {
       return "ALY-M001";
     case DiagnosticCode::kMetallibLinkFailed:
       return "ALY-M002";
+    case DiagnosticCode::kHostCompilationFailed:
+      return "ALY-C014";
+    case DiagnosticCode::kHostLinkFailed:
+      return "ALY-T006";
   }
   return "ALY-X000";
 }
@@ -267,6 +327,16 @@ enum class DiagnosticCode : std::uint16_t {
       return "missing kernel parameter name";
     case DiagnosticCode::kUnsupportedParameterType:
       return "unsupported kernel parameter type";
+    case DiagnosticCode::kRecursionUnsupported:
+      return "device function recursion is not supported";
+    case DiagnosticCode::kFunctionPointerUnsupported:
+      return "device function pointers and indirect calls are not supported";
+    case DiagnosticCode::kDynamicParallelismUnsupported:
+      return "dynamic parallelism is not supported";
+    case DiagnosticCode::kInvalidSharedMemoryDeclaration:
+      return "invalid __shared__ memory declaration";
+    case DiagnosticCode::kMalformedLaunchConfiguration:
+      return "malformed <<<...>>> kernel launch configuration";
     case DiagnosticCode::kNoInputFile:
       return "no input file";
     case DiagnosticCode::kToolchainNotFound:
@@ -282,6 +352,10 @@ enum class DiagnosticCode : std::uint16_t {
       return "Metal compilation failed";
     case DiagnosticCode::kMetallibLinkFailed:
       return "Metal library link failed";
+    case DiagnosticCode::kHostCompilationFailed:
+      return "host C++ compilation failed";
+    case DiagnosticCode::kHostLinkFailed:
+      return "host executable linking failed";
   }
   return "unknown compiler error";
 }

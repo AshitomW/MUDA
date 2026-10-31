@@ -39,13 +39,18 @@ struct KernelParameter {
 
 struct TranslatedKernel {
   std::string name;
+  std::string msl_name;
   std::vector<KernelParameter> parameters;
+  std::size_t static_shared_memory_bytes = 0;
+  bool uses_dynamic_shared_memory = false;
   std::string msl;
 };
 
 struct TranslationResult {
   DiagnosticCode code = DiagnosticCode::kMissingGlobalKernel;
   TranslatedKernel kernel;
+  std::vector<TranslatedKernel> kernels;
+  std::string msl;
 
   [[nodiscard]] constexpr bool ok() const noexcept { return code == DiagnosticCode::kOk; }
 

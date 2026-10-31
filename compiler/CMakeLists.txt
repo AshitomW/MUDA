@@ -1,6 +1,9 @@
 add_library(
   muda_compiler
+  src/cache.cpp
   src/driver.cpp
+  src/host_rewriter.cpp
+  src/mmir.cpp
   src/process.cpp
   src/toolchain.cpp
   src/translator.cpp
@@ -13,6 +16,13 @@ target_include_directories(
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<BUILD_INTERFACE:${MUDA_GENERATED_DIR}>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+)
+
+target_compile_definitions(
+  muda_compiler
+  PRIVATE
+    MUDA_DEFAULT_RUNTIME_INCLUDE_DIR="${PROJECT_SOURCE_DIR}/runtime/include"
+    MUDA_DEFAULT_RUNTIME_LIB_FILE="$<TARGET_FILE:muda_runtime>"
 )
 
 target_compile_features(muda_compiler PUBLIC cxx_std_20)

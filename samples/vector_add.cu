@@ -60,6 +60,10 @@ int main() {
   cudaFree(device_out);
 
   const bool is_ok = std::fabs(out[0] - kExpectedSum) <= kTolerance;
-  std::printf("%s\n", is_ok ? "ok" : "failed");
-  return is_ok ? 0 : 1;
+  if (!is_ok) {
+    std::fprintf(stderr, "mismatch: %.6f\n", static_cast<double>(out[0]));
+    return 1;
+  }
+  std::printf("%.6f\n", static_cast<double>(out[0]));
+  return 0;
 }

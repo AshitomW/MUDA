@@ -5,14 +5,14 @@
 
 #pragma once
 
-#include "cuda_runtime.h"
+#import <Metal/Metal.h>
 
 #include <cstddef>
 #include <cstdint>
 #include <map>
 #include <optional>
 
-#import <Metal/Metal.h>
+#include "cuda_runtime.h"
 
 namespace muda::runtime::cudart {
 
@@ -50,6 +50,7 @@ struct AllocationRecord {
   std::size_t size = 0;
   std::size_t capacity = 0;
   AttachMode attach_mode = AttachMode::kGlobal;
+  cudaMemoryType memory_type = cudaMemoryTypeDevice;
   id<MTLBuffer> buffer = nil;
 };
 
@@ -62,6 +63,7 @@ class AllocationTable {
                                          std::size_t count) noexcept;
   [[nodiscard]] static bool IsOffsetValid(const AllocationRecord* record,
                                           DeviceAddress address) noexcept;
+  [[nodiscard]] std::size_t TotalAllocatedBytes() const noexcept;
   void Clear();
 
  private:
@@ -69,4 +71,3 @@ class AllocationTable {
 };
 
 }  // namespace muda::runtime::cudart
-

@@ -501,6 +501,324 @@ bool TestKernelLaunch() {
   return true;
 }
 
+bool TestDevicePropertiesAndPointerAttributes() {
+  int runtime_ver = 0;
+  int driver_ver = 0;
+  if (!Expect(cudaRuntimeGetVersion(nullptr) == cudaErrorInvalidValue,
+              "cudaRuntimeGetVersion(nullptr) should fail")) {
+    return false;
+  }
+  (void)cudaGetLastError();
+  if (!Expect(cudaRuntimeGetVersion(&runtime_ver) == cudaSuccess && runtime_ver >= 11000,
+              "cudaRuntimeGetVersion should succeed")) {
+    return false;
+  }
+  if (!Expect(cudaDriverGetVersion(&driver_ver) == cudaSuccess && driver_ver >= 11000,
+              "cudaDriverGetVersion should succeed")) {
+    return false;
+  }
+
+  cudaDeviceProp prop{};
+  if (!Expect(cudaGetDeviceProperties(nullptr, 0) == cudaErrorInvalidValue,
+              "cudaGetDeviceProperties(nullptr, 0) should fail")) {
+    return false;
+  }
+  (void)cudaGetLastError();
+  if (!Expect(cudaGetDeviceProperties(&prop, 1) == cudaErrorInvalidDevice,
+              "cudaGetDeviceProperties(&prop, 1) should fail")) {
+    return false;
+  }
+  (void)cudaGetLastError();
+  if (!Expect(cudaGetDeviceProperties(&prop, 0) == cudaSuccess,
+              "cudaGetDeviceProperties(&prop, 0) should succeed")) {
+    return false;
+  }
+  if (!Expect(std::strlen(prop.name) > 0 && prop.warpSize == 32 && prop.maxThreadsPerBlock > 0 &&
+                  prop.sharedMemPerBlock > 0 && prop.totalGlobalMem > 0 &&
+                  prop.unifiedAddressing == 1 && prop.managedMemory == 1,
+              "synthesized cudaDeviceProp fields should be populated")) {
+    return false;
+  }
+
+  int warp_size = 0;
+  int max_threads = 0;
+  if (!Expect(cudaDeviceGetAttribute(&warp_size, cudaDevAttrWarpSize, 0) == cudaSuccess &&
+                  warp_size == 32,
+              "cudaDevAttrWarpSize should be 32")) {
+    return false;
+  }
+  if (!Expect(
+          cudaDeviceGetAttribute(&max_threads, cudaDevAttrMaxThreadsPerBlock, 0) == cudaSuccess &&
+              max_threads == prop.maxThreadsPerBlock,
+          "cudaDevAttrMaxThreadsPerBlock should match prop.maxThreadsPerBlock")) {
+    return false;
+  }
+
+  std::size_t free_mem = 0;
+  std::size_t total_mem = 0;
+  if (!Expect(cudaMemGetInfo(&free_mem, &total_mem) == cudaSuccess && total_mem > 0 &&
+                  free_mem <= total_mem,
+              "cudaMemGetInfo should report valid memory bounds")) {
+    return false;
+  }
+
+  void* dev_ptr = nullptr;
+  void* managed_ptr = nullptr;
+  void* host_ptr = nullptr;
+  if (!Expect(cudaMalloc(&dev_ptr, 512) == cudaSuccess &&
+                  cudaMallocManaged(&managed_ptr, 512) == cudaSuccess &&
+                  cudaMallocHost(&host_ptr, 512) == cudaSuccess,
+              "allocations for pointer attribute checks should succeed")) {
+    return false;
+  }
+
+  cudaPointerAttributes attrs{};
+  if (!Expect(cudaPointerGetAttributes(&attrs, static_cast<char*>(dev_ptr) + 64) == cudaSuccess &&
+                  attrs.type == cudaMemoryTypeDevice && attrs.device == 0,
+              "cudaPointerGetAttributes on device interior pointer should report Device")) {
+    return false;
+  }
+  if (!Expect(cudaPointerGetAttributes(&attrs, managed_ptr) == cudaSuccess &&
+                  attrs.type == cudaMemoryTypeManaged && attrs.device == 0,
+              "cudaPointerGetAttributes on managed pointer should report Managed")) {
+    return false;
+  }
+  if (!Expect(cudaPointerGetAttributes(&attrs, host_ptr) == cudaSuccess &&
+                  attrs.type == cudaMemoryTypeHost && attrs.device == 0,
+              "cudaPointerGetAttributes on pinned host pointer should report Host")) {
+    return false;
+  }
+
+  int stack_var = 42;
+  if (!Expect(cudaPointerGetAttributes(&attrs, &stack_var) == cudaSuccess &&
+                  attrs.type == cudaMemoryTypeUnregistered,
+              "cudaPointerGetAttributes on stack pointer should report Unregistered")) {
+    return false;
+  }
+
+  if (!Expect(cudaFree(dev_ptr) == cudaSuccess && cudaFree(managed_ptr) == cudaSuccess &&
+                  cudaFreeHost(host_ptr) == cudaSuccess,
+              "freeing attribute test pointers should succeed")) {
+    return false;
+  }
+  return true;
+}
+
+bool TestPitchAnd2DMemory() {
+  constexpr std::size_t kWidthCols = 17;
+  constexpr std::size_t kHeightRows = 8;
+  constexpr std::size_t kRowBytes = kWidthCols * sizeof(int);
+
+  int* pitched_dev = nullptr;
+  std::size_t pitch = 0;
+  if (!Expect(cudaMallocPitch(reinterpret_cast<void**>(&pitched_dev), &pitch, kRowBytes,
+                              kHeightRows) == cudaSuccess &&
+                  pitched_dev != nullptr && pitch >= kRowBytes && (pitch % 256u) == 0u,
+              "cudaMallocPitch should succeed with 256-byte aligned pitch")) {
+    return false;
+  }
+
+  if (!Expect(cudaMemset2D(pitched_dev, pitch, 0, kRowBytes, kHeightRows) == cudaSuccess,
+              "cudaMemset2D should succeed")) {
+    return false;
+  }
+
+  std::vector<int> host_src(kWidthCols * kHeightRows);
+  std::vector<int> host_dst(kWidthCols * kHeightRows, -1);
+  for (std::size_t r = 0; r < kHeightRows; ++r) {
+    for (std::size_t c = 0; c < kWidthCols; ++c) {
+      host_src[r * kWidthCols + c] = static_cast<int>(r * 100 + c + 1);
+    }
+  }
+
+  if (!Expect(cudaMemcpy2D(pitched_dev, pitch, host_src.data(), kRowBytes, kRowBytes, kHeightRows,
+                           cudaMemcpyHostToDevice) == cudaSuccess,
+              "cudaMemcpy2D HostToDevice should succeed")) {
+    return false;
+  }
+  if (!Expect(cudaMemcpy2D(host_dst.data(), kRowBytes, pitched_dev, pitch, kRowBytes, kHeightRows,
+                           cudaMemcpyDeviceToHost) == cudaSuccess,
+              "cudaMemcpy2D DeviceToHost should succeed")) {
+    return false;
+  }
+
+  for (std::size_t idx = 0; idx < host_src.size(); ++idx) {
+    if (!Expect(host_dst[idx] == host_src[idx], "cudaMemcpy2D round-trip mismatch")) {
+      return false;
+    }
+  }
+
+  if (!Expect(cudaMemcpy2D(host_dst.data(), kRowBytes - 4, pitched_dev, pitch, kRowBytes,
+                           kHeightRows, cudaMemcpyDeviceToHost) == cudaErrorInvalidPitchValue,
+              "cudaMemcpy2D with width > dpitch should return cudaErrorInvalidPitchValue")) {
+    return false;
+  }
+  (void)cudaGetLastError();
+
+  if (!Expect(cudaFree(pitched_dev) == cudaSuccess, "cudaFree(pitched_dev) should succeed")) {
+    return false;
+  }
+  return true;
+}
+
+bool TestStreamsAndEvents() {
+  if (!Expect(cudaStreamCreate(nullptr) == cudaErrorInvalidValue,
+              "cudaStreamCreate(nullptr) should fail")) {
+    return false;
+  }
+  (void)cudaGetLastError();
+
+  if (!Expect(cudaStreamCreateWithFlags(nullptr, 0x99u) == cudaErrorInvalidValue,
+              "cudaStreamCreateWithFlags invalid flags should fail")) {
+    return false;
+  }
+  (void)cudaGetLastError();
+
+  cudaStream_t stream1 = nullptr;
+  cudaStream_t stream2 = nullptr;
+  if (!Expect(cudaStreamCreate(&stream1) == cudaSuccess && stream1 != nullptr,
+              "cudaStreamCreate(stream1) should succeed")) {
+    return false;
+  }
+  if (!Expect(cudaStreamCreateWithFlags(&stream2, cudaStreamNonBlocking) == cudaSuccess &&
+                  stream2 != nullptr && stream2 != stream1,
+              "cudaStreamCreateWithFlags(stream2) should succeed")) {
+    return false;
+  }
+
+  cudaEvent_t ev_start = nullptr;
+  cudaEvent_t ev_end = nullptr;
+  cudaEvent_t ev_notiming = nullptr;
+  if (!Expect(cudaEventCreate(&ev_start) == cudaSuccess &&
+                  cudaEventCreate(&ev_end) == cudaSuccess &&
+                  cudaEventCreateWithFlags(&ev_notiming, cudaEventDisableTiming) == cudaSuccess,
+              "cudaEventCreate should succeed")) {
+    return false;
+  }
+
+  // Type-safety validation: passing an event handle cast to cudaStream_t must be rejected
+  const auto bogus_stream = reinterpret_cast<cudaStream_t>(ev_start);
+  if (!Expect(
+          cudaStreamSynchronize(bogus_stream) == cudaErrorInvalidResourceHandle,
+          "passing event handle to cudaStreamSynchronize must fail with InvalidResourceHandle")) {
+    return false;
+  }
+  (void)cudaGetLastError();
+
+  const auto bogus_event = reinterpret_cast<cudaEvent_t>(stream1);
+  if (!Expect(
+          cudaEventSynchronize(bogus_event) == cudaErrorInvalidResourceHandle,
+          "passing stream handle to cudaEventSynchronize must fail with InvalidResourceHandle")) {
+    return false;
+  }
+  (void)cudaGetLastError();
+
+  constexpr std::size_t kElements = 256;
+  constexpr std::size_t kBytes = kElements * sizeof(int);
+  int* dev_src = nullptr;
+  int* dev_dst = nullptr;
+  if (!Expect(cudaMalloc(reinterpret_cast<void**>(&dev_src), kBytes) == cudaSuccess &&
+                  cudaMalloc(reinterpret_cast<void**>(&dev_dst), kBytes) == cudaSuccess,
+              "cudaMalloc for async stream test should succeed")) {
+    return false;
+  }
+
+  if (!Expect(cudaEventRecord(ev_start, stream1) == cudaSuccess,
+              "cudaEventRecord(ev_start) should succeed")) {
+    return false;
+  }
+  if (!Expect(cudaMemsetAsync(dev_src, 0x11, kBytes, stream1) == cudaSuccess,
+              "cudaMemsetAsync on stream1 should succeed")) {
+    return false;
+  }
+  if (!Expect(cudaMemcpyAsync(dev_dst, dev_src, kBytes, cudaMemcpyDeviceToDevice, stream1) ==
+                  cudaSuccess,
+              "cudaMemcpyAsync D2D on stream1 should succeed")) {
+    return false;
+  }
+  if (!Expect(cudaEventRecord(ev_end, stream1) == cudaSuccess,
+              "cudaEventRecord(ev_end) should succeed")) {
+    return false;
+  }
+
+  if (!Expect(cudaStreamWaitEvent(stream2, ev_end, cudaEventWaitDefault) == cudaSuccess,
+              "cudaStreamWaitEvent on stream2 should succeed")) {
+    return false;
+  }
+
+  std::vector<int> host_out(kElements, 0);
+  if (!Expect(cudaMemcpyAsync(host_out.data(), dev_dst, kBytes, cudaMemcpyDeviceToHost, stream2) ==
+                  cudaSuccess,
+              "cudaMemcpyAsync D2H on stream2 should succeed")) {
+    return false;
+  }
+  if (!Expect(cudaStreamSynchronize(stream2) == cudaSuccess &&
+                  cudaEventSynchronize(ev_end) == cudaSuccess,
+              "synchronizing stream2 and ev_end should succeed")) {
+    return false;
+  }
+  if (!Expect(cudaStreamQuery(stream1) == cudaSuccess && cudaEventQuery(ev_end) == cudaSuccess,
+              "stream1 and ev_end should report cudaSuccess after completion")) {
+    return false;
+  }
+
+  for (std::size_t idx = 0; idx < kElements; ++idx) {
+    if (!Expect(host_out[idx] == 0x11111111, "async memset/memcpy output mismatch")) {
+      return false;
+    }
+  }
+
+  float elapsed_ms = -1.0f;
+  if (!Expect(
+          cudaEventElapsedTime(&elapsed_ms, ev_start, ev_end) == cudaSuccess && elapsed_ms >= 0.0f,
+          "cudaEventElapsedTime should return non-negative duration")) {
+    return false;
+  }
+
+  if (!Expect(cudaEventRecord(ev_notiming, stream1) == cudaSuccess &&
+                  cudaEventSynchronize(ev_notiming) == cudaSuccess,
+              "recording and syncing disable-timing event should succeed")) {
+    return false;
+  }
+  if (!Expect(cudaEventElapsedTime(&elapsed_ms, ev_start, ev_notiming) ==
+                  cudaErrorInvalidResourceHandle,
+              "cudaEventElapsedTime with cudaEventDisableTiming should fail")) {
+    return false;
+  }
+  (void)cudaGetLastError();
+
+  // Stale handle detection after destroy
+  if (!Expect(cudaEventDestroy(ev_start) == cudaSuccess &&
+                  cudaEventDestroy(ev_end) == cudaSuccess &&
+                  cudaEventDestroy(ev_notiming) == cudaSuccess,
+              "cudaEventDestroy should succeed")) {
+    return false;
+  }
+  if (!Expect(cudaEventDestroy(ev_start) == cudaErrorInvalidResourceHandle,
+              "double cudaEventDestroy must fail with cudaErrorInvalidResourceHandle")) {
+    return false;
+  }
+  (void)cudaGetLastError();
+
+  if (!Expect(
+          cudaStreamDestroy(stream1) == cudaSuccess && cudaStreamDestroy(stream2) == cudaSuccess,
+          "cudaStreamDestroy should succeed")) {
+    return false;
+  }
+  if (!Expect(cudaStreamDestroy(stream1) == cudaErrorInvalidResourceHandle,
+              "double cudaStreamDestroy must fail with cudaErrorInvalidResourceHandle")) {
+    return false;
+  }
+  (void)cudaGetLastError();
+
+  if (!Expect(cudaFree(dev_src) == cudaSuccess && cudaFree(dev_dst) == cudaSuccess &&
+                  cudaDeviceReset() == cudaSuccess,
+              "cleanup after stream/event test should succeed")) {
+    return false;
+  }
+  return true;
+}
+
 }  // namespace
 
 int main() {
@@ -518,7 +836,19 @@ int main() {
     return 0;
   }
 
+  if (!TestDevicePropertiesAndPointerAttributes()) {
+    return 1;
+  }
+
   if (!TestMemoryAndSync()) {
+    return 1;
+  }
+
+  if (!TestPitchAnd2DMemory()) {
+    return 1;
+  }
+
+  if (!TestStreamsAndEvents()) {
     return 1;
   }
 

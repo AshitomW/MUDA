@@ -64,6 +64,14 @@ bool AllocationTable::IsOffsetValid(const AllocationRecord* record,
   return (address.value - record->base_address.value) < record->size;
 }
 
+std::size_t AllocationTable::TotalAllocatedBytes() const noexcept {
+  std::size_t total = 0;
+  for (const auto& [addr, record] : records_) {
+    total += record.capacity;
+  }
+  return total;
+}
+
 void AllocationTable::Clear() { records_.clear(); }
 
 }  // namespace muda::runtime::cudart

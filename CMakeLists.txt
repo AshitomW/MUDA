@@ -27,6 +27,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(MUDA_BUILD_TESTS "Build MUDA tests" ON)
 option(MUDA_BUILD_SAMPLES "Expose MUDA sample sources" ON)
+option(MUDA_BUILD_BENCHMARKS "Build MUDA benchmarks" ON)
 option(MUDA_SANITIZE "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
 
 add_library(muda_warnings INTERFACE)
@@ -82,4 +83,8 @@ endif()
 
 if(MUDA_BUILD_SAMPLES)
   add_subdirectory(samples)
+endif()
+
+if(MUDA_BUILD_BENCHMARKS)
+  add_subdirectory(benchmarks)
 endif()
