@@ -40,6 +40,20 @@ CompileResult Failure(DiagnosticCode code) noexcept {
   return result;
 }
 
+CompileResult Success(std::filesystem::path output_path,
+                      std::filesystem::path metallib_path,
+                      std::string kernel_name,
+                      bool cache_hit = false) {
+  CompileResult result;
+  result.status = Status::kOk;
+  result.code = DiagnosticCode::kOk;
+  result.output_path = std::move(output_path);
+  result.metallib_path = std::move(metallib_path);
+  result.kernel_name = std::move(kernel_name);
+  result.cache_hit = cache_hit;
+  return result;
+}
+
 void RemoveFile(const std::filesystem::path& path) noexcept {
   if (path.empty()) {
     return;
@@ -161,135 +175,154 @@ bool RunProcessOwned(const std::vector<std::string>& args) {
   return detail::RunProcess(views).succeeded();
 }
 
-}  // namespace
-
-CompileResult Compile(const CompileOptions& options) {
-  if (options.input.empty()) {
-    return Failure(DiagnosticCode::kNoInputFile);
-  }
-
-  const OutputKind output_kind = ResolveOutputKind(options);
-  if (output_kind != OutputKind::kMslSource && !MetalToolchainAvailable()) {
-    return Failure(DiagnosticCode::kToolchainNotFound);
-  }
-
-  std::ifstream input(options.input, std::ios::binary);
+bool ReadSourceFile(const std::filesystem::path& path, std::string* out_source) {
+  std::ifstream input(path, std::ios::binary);
   if (!input) {
-    return Failure(DiagnosticCode::kCannotOpenInput);
+    return false;
   }
-
   std::ostringstream source_buffer;
   source_buffer << input.rdbuf();
-  const std::string source = source_buffer.str();
+  *out_source = source_buffer.str();
+  return true;
+}
 
-  TranslationResult translation = TranslateCudaToMsl(source);
-  if (!translation.ok()) {
-    return Failure(translation.code);
+bool EnsureOutputDirectoryExists(const std::filesystem::path& output) {
+  if (!output.has_parent_path() || output.parent_path().empty()) {
+    return true;
   }
-
-  std::filesystem::path output = ResolveOutputPath(options, output_kind);
   std::error_code fs_error;
-  if (output.has_parent_path() && !output.parent_path().empty()) {
-    std::filesystem::create_directories(output.parent_path(), fs_error);
-    if (fs_error) {
-      return Failure(DiagnosticCode::kCannotCreateOutputDir);
-    }
+  std::filesystem::create_directories(output.parent_path(), fs_error);
+  return !fs_error;
+}
+
+std::string_view SelectMslSource(const TranslationResult& translation) noexcept {
+  if (!translation.msl.empty()) {
+    return translation.msl;
   }
+  return translation.kernel.msl;
+}
 
-  const std::string& msl_source =
-      !translation.msl.empty() ? translation.msl : translation.kernel.msl;
+struct IntermediateArtifacts {
+  std::filesystem::path metal_path;
+  std::filesystem::path air_path;
+  std::filesystem::path metallib_path;
+  std::filesystem::path host_cpp_path;
+};
 
-  if (output_kind == OutputKind::kMslSource) {
-    if (!WriteTextFile(output, msl_source)) {
-      return Failure(DiagnosticCode::kCannotWriteMetalSource);
-    }
-    CompileResult result;
-    result.status = Status::kOk;
-    result.code = DiagnosticCode::kOk;
-    result.output_path = output;
-    result.kernel_name = std::move(translation.kernel.name);
-    return result;
-  }
+IntermediateArtifacts MakeIntermediateArtifacts(const std::filesystem::path& output,
+                                                OutputKind output_kind,
+                                                IntermediatePolicy policy) {
+  const std::filesystem::path base_dir = ResolveBaseDirectory(output, policy);
+  const std::string stem = MakeIntermediateStem(output, policy);
+  IntermediateArtifacts artifacts;
+  artifacts.metal_path = base_dir / (stem + ".metal");
+  artifacts.air_path = base_dir / (stem + ".air");
+  artifacts.metallib_path =
+      (output_kind == OutputKind::kMetallib) ? output : (base_dir / (stem + ".metallib"));
+  artifacts.host_cpp_path = base_dir / (stem + ".host.cpp");
+  return artifacts;
+}
 
-  const std::filesystem::path base_dir = ResolveBaseDirectory(output, options.intermediates);
-  const std::string stem = MakeIntermediateStem(output, options.intermediates);
-  const std::filesystem::path metal_path = base_dir / (stem + ".metal");
-  const std::filesystem::path air_path = base_dir / (stem + ".air");
-  const std::filesystem::path metallib_path =
-      output_kind == OutputKind::kMetallib ? output : (base_dir / (stem + ".metallib"));
-  const std::filesystem::path host_cpp_path = base_dir / (stem + ".host.cpp");
-
-  std::vector<std::filesystem::path> temp_files = {metal_path, air_path};
+ScopedIntermediateCleaner MakeIntermediateCleaner(const IntermediateArtifacts& artifacts,
+                                                  OutputKind output_kind,
+                                                  IntermediatePolicy policy) {
+  std::vector<std::filesystem::path> temp_files = {artifacts.metal_path, artifacts.air_path};
   if (output_kind != OutputKind::kMetallib) {
-    temp_files.push_back(metallib_path);
-    temp_files.push_back(host_cpp_path);
+    temp_files.push_back(artifacts.metallib_path);
+    temp_files.push_back(artifacts.host_cpp_path);
   }
-  const ScopedIntermediateCleaner cleaner(std::move(temp_files), options.intermediates);
+  return {std::move(temp_files), policy};
+}
 
-  if (!WriteTextFile(metal_path, msl_source)) {
-    return Failure(DiagnosticCode::kCannotWriteMetalSource);
+bool IsCacheEnabled(const CompileOptions& options) noexcept {
+  if (options.disable_cache || options.intermediates != IntermediatePolicy::kRemove) {
+    return false;
   }
+  const char* env_disable = std::getenv("MUDA_DISABLE_CACHE");
+  if (env_disable == nullptr || env_disable[0] == '\0') {
+    return true;
+  }
+  return std::string_view(env_disable) == "0";
+}
 
-  const char* env_disable_cache = std::getenv("MUDA_DISABLE_CACHE");
-  const bool cache_enabled = !options.disable_cache &&
-                             options.intermediates == IntermediatePolicy::kRemove &&
-                             (env_disable_cache == nullptr || env_disable_cache[0] == '\0' ||
-                              std::string_view(env_disable_cache) == "0");
+bool CompileMetalToAir(const std::filesystem::path& metal_path,
+                       const std::filesystem::path& air_path,
+                       const CompileOptions& options) {
+  const std::string metal_path_str = metal_path.string();
+  const std::string air_path_str = air_path.string();
+  const std::string_view std_flag = MetalStandardFlag(options.metal_standard);
+  const std::string_view opt_flag = OptimizationLevelFlag(options.optimization);
+  const std::array<std::string_view, 10> compile_args = {
+      "xcrun",  "--sdk", "macosx",       "metal", std_flag,
+      opt_flag, "-c",    metal_path_str, "-o",    air_path_str};
+  return detail::RunProcess(compile_args).succeeded();
+}
 
+bool LinkAirToMetallib(const std::filesystem::path& air_path,
+                       const std::filesystem::path& metallib_path) {
+  const std::string air_path_str = air_path.string();
+  const std::string metallib_path_str = metallib_path.string();
+  const std::array<std::string_view, 7> link_args = {
+      "xcrun", "--sdk", "macosx", "metallib", air_path_str, "-o", metallib_path_str};
+  return detail::RunProcess(link_args).succeeded();
+}
+
+struct BuildMetallibResult {
+  DiagnosticCode code{DiagnosticCode::kOk};
+  bool cache_hit{false};
+
+  [[nodiscard]] bool ok() const noexcept { return code == DiagnosticCode::kOk; }
+};
+
+BuildMetallibResult BuildOrLoadMetallib(const IntermediateArtifacts& artifacts,
+                                       std::string_view msl_source,
+                                       const CompileOptions& options) {
+  const bool cache_enabled = IsCacheEnabled(options);
   const std::filesystem::path cache_root =
       !options.cache_dir.empty() ? options.cache_dir : ArtifactCache::DefaultCacheDirectory();
   const ArtifactCache cache(cache_root);
-  const std::string cache_key =
-      cache_enabled ? ArtifactCache::ComputeKey({msl_source, muda::kVersion, options.metal_standard,
-                                                 options.optimization})
-                    : std::string{};
 
-  bool cache_hit = false;
-  if (cache_enabled && cache.CopyCachedMetallibTo(cache_key, metallib_path)) {
-    cache_hit = true;
-  } else {
-    const std::string metal_path_str = metal_path.string();
-    const std::string air_path_str = air_path.string();
-    const std::string metallib_path_str = metallib_path.string();
-
-    const std::string_view std_flag = MetalStandardFlag(options.metal_standard);
-    const std::string_view opt_flag = OptimizationLevelFlag(options.optimization);
-    const std::array<std::string_view, 10> compile_args = {
-        "xcrun",  "--sdk", "macosx",       "metal", std_flag,
-        opt_flag, "-c",    metal_path_str, "-o",    air_path_str};
-    if (!detail::RunProcess(compile_args).succeeded()) {
-      return Failure(DiagnosticCode::kMetalCompilationFailed);
-    }
-
-    const std::array<std::string_view, 7> link_args = {
-        "xcrun", "--sdk", "macosx", "metallib", air_path_str, "-o", metallib_path_str};
-    if (!detail::RunProcess(link_args).succeeded()) {
-      RemoveFile(metallib_path);
-      return Failure(DiagnosticCode::kMetallibLinkFailed);
-    }
-
-    if (cache_enabled) {
-      std::vector<std::uint8_t> compiled_bytes;
-      if (ReadBinaryFile(metallib_path, &compiled_bytes)) {
-        (void)cache.Store(cache_key, compiled_bytes);
-      }
+  std::string cache_key;
+  if (cache_enabled) {
+    const CacheKeyInput key_input{
+        .msl_source = msl_source,
+        .muda_version = muda::kVersion,
+        .metal_standard = options.metal_standard,
+        .optimization = options.optimization,
+    };
+    cache_key = ArtifactCache::ComputeKey(key_input);
+    if (cache.CopyCachedMetallibTo(cache_key, artifacts.metallib_path)) {
+      return BuildMetallibResult{.code = DiagnosticCode::kOk, .cache_hit = true};
     }
   }
 
-  if (output_kind == OutputKind::kMetallib) {
-    CompileResult result;
-    result.status = Status::kOk;
-    result.code = DiagnosticCode::kOk;
-    result.output_path = metallib_path;
-    result.metallib_path = metallib_path;
-    result.kernel_name = std::move(translation.kernel.name);
-    result.cache_hit = cache_hit;
-    return result;
+  if (!CompileMetalToAir(artifacts.metal_path, artifacts.air_path, options)) {
+    return BuildMetallibResult{.code = DiagnosticCode::kMetalCompilationFailed,
+                               .cache_hit = false};
   }
 
+  if (!LinkAirToMetallib(artifacts.air_path, artifacts.metallib_path)) {
+    RemoveFile(artifacts.metallib_path);
+    return BuildMetallibResult{.code = DiagnosticCode::kMetallibLinkFailed,
+                               .cache_hit = false};
+  }
+
+  if (cache_enabled) {
+    std::vector<std::uint8_t> compiled_bytes;
+    if (ReadBinaryFile(artifacts.metallib_path, &compiled_bytes)) {
+      (void)cache.Store(cache_key, compiled_bytes);
+    }
+  }
+
+  return BuildMetallibResult{.code = DiagnosticCode::kOk, .cache_hit = false};
+}
+
+DiagnosticCode PrepareHostSource(const std::string& source,
+                                 const TranslationResult& translation,
+                                 const IntermediateArtifacts& artifacts) {
   std::vector<std::uint8_t> metallib_bytes;
-  if (!ReadBinaryFile(metallib_path, &metallib_bytes)) {
-    return Failure(DiagnosticCode::kMetallibLinkFailed);
+  if (!ReadBinaryFile(artifacts.metallib_path, &metallib_bytes)) {
+    return DiagnosticCode::kMetallibLinkFailed;
   }
 
   std::vector<TranslatedKernel> kernels_list = translation.kernels;
@@ -300,13 +333,20 @@ CompileResult Compile(const CompileOptions& options) {
   const HostRewriteResult host_rewritten =
       RewriteHostCudaToCpp(source, kernels_list, metallib_bytes);
   if (!host_rewritten.ok()) {
-    return Failure(host_rewritten.code);
+    return host_rewritten.code;
   }
 
-  if (!WriteTextFile(host_cpp_path, host_rewritten.host_cpp)) {
-    return Failure(DiagnosticCode::kCannotWriteMetalSource);
+  if (!WriteTextFile(artifacts.host_cpp_path, host_rewritten.host_cpp)) {
+    return DiagnosticCode::kCannotWriteMetalSource;
   }
 
+  return DiagnosticCode::kOk;
+}
+
+std::vector<std::string> BuildHostCompilerArgs(const CompileOptions& options,
+                                               OutputKind output_kind,
+                                               const IntermediateArtifacts& artifacts,
+                                               const std::filesystem::path& output) {
   std::vector<std::string> host_args = {"xcrun", "clang++", "-std=c++20", "-O2"};
 #if defined(__has_feature)
 #if __has_feature(address_sanitizer) || __has_feature(undefined_behavior_sanitizer)
@@ -328,15 +368,11 @@ CompileResult Compile(const CompileOptions& options) {
 
   if (output_kind == OutputKind::kObject) {
     host_args.emplace_back("-c");
-    host_args.emplace_back(host_cpp_path.string());
+    host_args.emplace_back(artifacts.host_cpp_path.string());
     host_args.emplace_back("-o");
     host_args.emplace_back(output.string());
-    if (!RunProcessOwned(host_args)) {
-      RemoveFile(output);
-      return Failure(DiagnosticCode::kHostCompilationFailed);
-    }
   } else {
-    host_args.emplace_back(host_cpp_path.string());
+    host_args.emplace_back(artifacts.host_cpp_path.string());
 #ifdef MUDA_DEFAULT_RUNTIME_LIB_FILE
     host_args.emplace_back(MUDA_DEFAULT_RUNTIME_LIB_FILE);
 #endif
@@ -352,22 +388,99 @@ CompileResult Compile(const CompileOptions& options) {
     host_args.emplace_back("Metal");
     host_args.emplace_back("-o");
     host_args.emplace_back(output.string());
-    if (!RunProcessOwned(host_args)) {
-      RemoveFile(output);
-      return Failure(DiagnosticCode::kHostLinkFailed);
-    }
+  }
+  return host_args;
+}
+
+DiagnosticCode CompileHostCode(const CompileOptions& options,
+                               OutputKind output_kind,
+                               const IntermediateArtifacts& artifacts,
+                               const std::filesystem::path& output) {
+  const std::vector<std::string> host_args =
+      BuildHostCompilerArgs(options, output_kind, artifacts, output);
+  if (!RunProcessOwned(host_args)) {
+    RemoveFile(output);
+    return (output_kind == OutputKind::kObject) ? DiagnosticCode::kHostCompilationFailed
+                                                : DiagnosticCode::kHostLinkFailed;
+  }
+  return DiagnosticCode::kOk;
+}
+
+}  // namespace
+
+
+
+CompileResult Compile(const CompileOptions& options) {
+  if (options.input.empty()) {
+    return Failure(DiagnosticCode::kNoInputFile);
   }
 
-  CompileResult result;
-  result.status = Status::kOk;
-  result.code = DiagnosticCode::kOk;
-  result.output_path = output;
-  result.metallib_path = (options.intermediates == IntermediatePolicy::kKeep)
-                             ? metallib_path
-                             : std::filesystem::path{};
-  result.kernel_name = std::move(translation.kernel.name);
-  result.cache_hit = cache_hit;
-  return result;
+  const OutputKind output_kind = ResolveOutputKind(options);
+  if (output_kind != OutputKind::kMslSource && !MetalToolchainAvailable()) {
+    return Failure(DiagnosticCode::kToolchainNotFound);
+  }
+
+  std::string source;
+  if (!ReadSourceFile(options.input, &source)) {
+    return Failure(DiagnosticCode::kCannotOpenInput);
+  }
+
+  TranslationResult translation = TranslateCudaToMsl(source);
+  if (!translation.ok()) {
+    return Failure(translation.code);
+  }
+
+  const std::filesystem::path output = ResolveOutputPath(options, output_kind);
+  if (!EnsureOutputDirectoryExists(output)) {
+    return Failure(DiagnosticCode::kCannotCreateOutputDir);
+  }
+
+  const std::string_view msl_source = SelectMslSource(translation);
+
+  if (output_kind == OutputKind::kMslSource) {
+    if (!WriteTextFile(output, msl_source)) {
+      return Failure(DiagnosticCode::kCannotWriteMetalSource);
+    }
+    return Success(output, {}, std::move(translation.kernel.name));
+  }
+
+  const IntermediateArtifacts artifacts =
+      MakeIntermediateArtifacts(output, output_kind, options.intermediates);
+  const ScopedIntermediateCleaner cleaner =
+      MakeIntermediateCleaner(artifacts, output_kind, options.intermediates);
+
+  if (!WriteTextFile(artifacts.metal_path, msl_source)) {
+    return Failure(DiagnosticCode::kCannotWriteMetalSource);
+  }
+
+  const BuildMetallibResult metallib_result =
+      BuildOrLoadMetallib(artifacts, msl_source, options);
+  if (!metallib_result.ok()) {
+    return Failure(metallib_result.code);
+  }
+
+  if (output_kind == OutputKind::kMetallib) {
+    return Success(artifacts.metallib_path, artifacts.metallib_path,
+                   std::move(translation.kernel.name), metallib_result.cache_hit);
+  }
+
+  const DiagnosticCode host_prep_code =
+      PrepareHostSource(source, translation, artifacts);
+  if (host_prep_code != DiagnosticCode::kOk) {
+    return Failure(host_prep_code);
+  }
+
+  const DiagnosticCode host_compile_code =
+      CompileHostCode(options, output_kind, artifacts, output);
+  if (host_compile_code != DiagnosticCode::kOk) {
+    return Failure(host_compile_code);
+  }
+
+  const std::filesystem::path metallib_output =
+      (options.intermediates == IntermediatePolicy::kKeep) ? artifacts.metallib_path
+                                                           : std::filesystem::path{};
+  return Success(output, metallib_output, std::move(translation.kernel.name),
+                 metallib_result.cache_hit);
 }
 
 }  // namespace muda::compiler

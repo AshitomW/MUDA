@@ -35,6 +35,7 @@ struct ResolvedEndpoint {
   std::size_t offset = 0;
   std::size_t size = 0;
   bool is_device = false;
+  
 };
 
 class MemoryManager {

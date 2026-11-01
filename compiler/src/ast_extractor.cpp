@@ -162,10 +162,10 @@ void RemoveIdentifier(std::string& text, std::string_view identifier) {
 ParsedParameter ParseParameter(std::string_view text, std::size_t index) {
   const std::string normalized = NormalizeSpace(text);
   if (normalized.empty()) {
-    return {DiagnosticCode::kEmptyKernelParameter, {}};
+    return {.code=DiagnosticCode::kEmptyKernelParameter, .parameter={}};
   }
   if (normalized.find("(*") != std::string::npos) {
-    return {DiagnosticCode::kFunctionPointerUnsupported, {}};
+    return {.code=DiagnosticCode::kFunctionPointerUnsupported, .parameter={}};
   }
 
   std::size_t declaration_end = normalized.size();

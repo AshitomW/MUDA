@@ -126,7 +126,7 @@ cudaError_t MemoryManager::MemGetInfo(size_t* free_bytes, size_t* total_bytes,
     return RecordError(cudaErrorInitializationError);
   }
   std::shared_lock<std::shared_mutex> lock(mutex_);
-  const std::size_t total = static_cast<std::size_t>(device.recommendedMaxWorkingSetSize);
+  const auto total = static_cast<std::size_t>(device.recommendedMaxWorkingSetSize);
   const std::size_t allocated = allocations_.TotalAllocatedBytes();
   *total_bytes = total;
   *free_bytes = (allocated <= total) ? (total - allocated) : 0;
