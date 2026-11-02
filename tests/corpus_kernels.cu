@@ -421,3 +421,4 @@ __global__ void k30_spmv_csr(const int* row_offsets, const int* col_indices, con
     y[row] = sum;
   }
 }
+

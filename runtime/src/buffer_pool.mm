@@ -168,3 +168,4 @@ void BufferPool::SetEnabled(bool enabled) noexcept {
 }
 
 }  // namespace muda::runtime::cudart
+

@@ -346,3 +346,4 @@ int main() {
   std::cout << "atomics_test: ALL PASSED\n";
   return 0;
 }
+

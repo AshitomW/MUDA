@@ -333,3 +333,4 @@ int main() {
   std::cout << "half_vector_test: ALL PASSED\n";
   return 0;
 }
+

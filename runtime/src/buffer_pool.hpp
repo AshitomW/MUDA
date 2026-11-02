@@ -62,3 +62,4 @@ class BufferPool {
 };
 
 }  // namespace muda::runtime::cudart
+
