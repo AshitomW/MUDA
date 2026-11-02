@@ -327,6 +327,14 @@ std::string LowerExpression(std::string_view expr) {
         continue;
       }
     }
+    if (word == "__half") {
+      result.append("half");
+      continue;
+    }
+    if (word == "__half2") {
+      result.append("half2");
+      continue;
+    }
     const std::string_view math_rep = MathIntrinsicReplacement(word);
     if (!math_rep.empty() && next < expr.size() && expr[next] == '(') {
       result.append(math_rep);
@@ -931,6 +939,14 @@ DiagnosticCode ExtractSharedMemoryAndLowerBody(std::string_view raw_body,
       }
     }
 
+    if (word == "__half") {
+      result.append("half");
+      continue;
+    }
+    if (word == "__half2") {
+      result.append("half2");
+      continue;
+    }
     const std::string_view math_rep = MathIntrinsicReplacement(word);
     if (!math_rep.empty() && next < body.size() && body[next] == '(') {
       result.append(math_rep);
