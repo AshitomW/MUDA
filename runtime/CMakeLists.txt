@@ -2,6 +2,7 @@ add_library(
   muda_runtime
   src/allocation_table.mm
   src/buffer.mm
+  src/buffer_pool.mm
   src/cuda_runtime.mm
   src/device.mm
   src/device_manager.mm

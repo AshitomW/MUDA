@@ -46,6 +46,10 @@ target_link_libraries(half_vector_test PRIVATE muda::compiler muda::runtime muda
 target_compile_definitions(half_vector_test PRIVATE MUDA_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
 add_test(NAME half_vector_test COMMAND half_vector_test)
 
+add_executable(buffer_pool_test buffer_pool_test.cpp)
+target_link_libraries(buffer_pool_test PRIVATE muda::runtime muda_warnings)
+add_test(NAME buffer_pool_test COMMAND buffer_pool_test)
+
 set_tests_properties(compiler_test vector_add_test corpus_test warp_intrinsics_test atomics_test half_vector_test PROPERTIES SKIP_RETURN_CODE 77)
 
 add_test(NAME mudac_version COMMAND mudac --version)
