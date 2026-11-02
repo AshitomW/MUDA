@@ -69,6 +69,7 @@ TranslationResult TranslateCudaToMsl(std::string_view source) {
   }
 
   mmir::Module module;
+  ExtractIncludes(source, &module.includes);
   for (const RawFunctionSlice& slice : slices) {
     if (slice.kind == QualifierKind::kDevice) {
       mmir::DeviceFunction dev_fn;

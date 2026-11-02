@@ -248,14 +248,30 @@ bool IsCacheEnabled(const CompileOptions& options) noexcept {
 bool CompileMetalToAir(const std::filesystem::path& metal_path,
                        const std::filesystem::path& air_path,
                        const CompileOptions& options) {
-  const std::string metal_path_str = metal_path.string();
-  const std::string air_path_str = air_path.string();
-  const std::string_view std_flag = MetalStandardFlag(options.metal_standard);
-  const std::string_view opt_flag = OptimizationLevelFlag(options.optimization);
-  const std::array<std::string_view, 10> compile_args = {
-      "xcrun",  "--sdk", "macosx",       "metal", std_flag,
-      opt_flag, "-c",    metal_path_str, "-o",    air_path_str};
-  return detail::RunProcess(compile_args).succeeded();
+  std::vector<std::string> compile_args = {
+      "xcrun",
+      "--sdk",
+      "macosx",
+      "metal",
+      std::string(MetalStandardFlag(options.metal_standard)),
+      std::string(OptimizationLevelFlag(options.optimization)),
+  };
+  if (options.optimization == OptimizationLevel::kFast) {
+    compile_args.emplace_back("-ffast-math");
+  }
+  if (options.input.has_parent_path()) {
+    compile_args.emplace_back("-I");
+    compile_args.emplace_back(options.input.parent_path().string());
+  }
+  for (const auto& inc : options.include_dirs) {
+    compile_args.emplace_back("-I");
+    compile_args.emplace_back(inc.string());
+  }
+  compile_args.emplace_back("-c");
+  compile_args.emplace_back(metal_path.string());
+  compile_args.emplace_back("-o");
+  compile_args.emplace_back(air_path.string());
+  return RunProcessOwned(compile_args);
 }
 
 bool LinkAirToMetallib(const std::filesystem::path& air_path,
@@ -284,11 +300,18 @@ BuildMetallibResult BuildOrLoadMetallib(const IntermediateArtifacts& artifacts,
 
   std::string cache_key;
   if (cache_enabled) {
+    const std::string toolchain_ver = GetMetalToolchainVersion();
+    const std::string dep_hash =
+        !options.input.empty()
+            ? ArtifactCache::ComputeDependencyHash(options.input, options.include_dirs)
+            : std::string();
     const CacheKeyInput key_input{
         .msl_source = msl_source,
         .muda_version = muda::kVersion,
+        .toolchain_version = toolchain_ver,
         .metal_standard = options.metal_standard,
         .optimization = options.optimization,
+        .dependencies_hash = dep_hash,
     };
     cache_key = ArtifactCache::ComputeKey(key_input);
     if (cache.CopyCachedMetallibTo(cache_key, artifacts.metallib_path)) {
@@ -347,7 +370,12 @@ std::vector<std::string> BuildHostCompilerArgs(const CompileOptions& options,
                                                OutputKind output_kind,
                                                const IntermediateArtifacts& artifacts,
                                                const std::filesystem::path& output) {
-  std::vector<std::string> host_args = {"xcrun", "clang++", "-std=c++20", "-O2"};
+  std::vector<std::string> host_args = {"xcrun", "clang++", "-std=c++20"};
+  if (options.optimization == OptimizationLevel::kFast) {
+    host_args.emplace_back("-Ofast");
+  } else {
+    host_args.emplace_back(std::string(OptimizationLevelFlag(options.optimization)));
+  }
 #if defined(__has_feature)
 #if __has_feature(address_sanitizer) || __has_feature(undefined_behavior_sanitizer)
   host_args.emplace_back("-fsanitize=address,undefined");

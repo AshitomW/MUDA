@@ -192,6 +192,14 @@ std::string EmitMslModule(const Module& module) {
   msl += "#include <metal_stdlib>\n";
   msl += "using namespace metal;\n\n";
 
+  for (const std::string& inc : module.includes) {
+    msl += inc;
+    msl.push_back('\n');
+  }
+  if (!module.includes.empty()) {
+    msl.push_back('\n');
+  }
+
   for (const DeviceFunction& fn : module.device_functions) {
     EmitDeviceFunctionMsl(fn, &msl);
   }
@@ -210,6 +218,14 @@ std::string EmitMslKernel(const Module& module, const KernelFunction& kernel) {
   msl.reserve(1024);
   msl += "#include <metal_stdlib>\n";
   msl += "using namespace metal;\n\n";
+
+  for (const std::string& inc : module.includes) {
+    msl += inc;
+    msl.push_back('\n');
+  }
+  if (!module.includes.empty()) {
+    msl.push_back('\n');
+  }
 
   for (const DeviceFunction& fn : module.device_functions) {
     EmitDeviceFunctionMsl(fn, &msl);

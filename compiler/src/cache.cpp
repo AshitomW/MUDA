@@ -11,7 +11,9 @@
 #include <atomic>
 #include <cstdlib>
 #include <fstream>
+#include <iterator>
 #include <system_error>
+#include <unordered_set>
 #include <utility>
 
 namespace muda::compiler {
@@ -40,6 +42,91 @@ std::string ToHex64(std::uint64_t value) {
   return out;
 }
 
+void ScanIncludesRecursively(const std::filesystem::path& file_path,
+                             const std::vector<std::filesystem::path>& include_dirs,
+                             std::unordered_set<std::string>& visited,
+                             std::uint64_t* inout_hash) {
+  std::ifstream stream(file_path);
+  if (!stream) {
+    return;
+  }
+
+  std::string line;
+  while (std::getline(stream, line)) {
+    std::string_view sv = line;
+    while (!sv.empty() && (sv.front() == ' ' || sv.front() == '\t')) {
+      sv.remove_prefix(1);
+    }
+    if (!sv.starts_with('#')) {
+      continue;
+    }
+    sv.remove_prefix(1);
+    while (!sv.empty() && (sv.front() == ' ' || sv.front() == '\t')) {
+      sv.remove_prefix(1);
+    }
+    if (!sv.starts_with("include")) {
+      continue;
+    }
+    sv.remove_prefix(7);
+    while (!sv.empty() && (sv.front() == ' ' || sv.front() == '\t')) {
+      sv.remove_prefix(1);
+    }
+    if (sv.empty()) {
+      continue;
+    }
+    char close_delim = 0;
+    if (sv.front() == '"') {
+      close_delim = '"';
+    } else if (sv.front() == '<') {
+      close_delim = '>';
+    } else {
+      continue;
+    }
+    sv.remove_prefix(1);
+    const auto close_pos = sv.find(close_delim);
+    if (close_pos == std::string_view::npos) {
+      continue;
+    }
+    const std::filesystem::path header_name = std::string(sv.substr(0, close_pos));
+
+    std::filesystem::path resolved;
+    if (close_delim == '"') {
+      const std::filesystem::path local = file_path.parent_path() / header_name;
+      std::error_code ec;
+      if (std::filesystem::exists(local, ec) && !std::filesystem::is_directory(local, ec)) {
+        resolved = std::filesystem::canonical(local, ec);
+      }
+    }
+    if (resolved.empty()) {
+      for (const auto& inc_dir : include_dirs) {
+        const std::filesystem::path candidate = inc_dir / header_name;
+        std::error_code ec;
+        if (std::filesystem::exists(candidate, ec) &&
+            !std::filesystem::is_directory(candidate, ec)) {
+          resolved = std::filesystem::canonical(candidate, ec);
+          break;
+        }
+      }
+    }
+
+    if (!resolved.empty()) {
+      const std::string resolved_str = resolved.string();
+      if (visited.insert(resolved_str).second) {
+        std::ifstream header_stream(resolved, std::ios::binary);
+        if (header_stream) {
+          const std::string content((std::istreambuf_iterator<char>(header_stream)),
+                                    std::istreambuf_iterator<char>());
+          *inout_hash = FnV1a64(resolved_str, *inout_hash);
+          *inout_hash = FnV1a64(":", *inout_hash);
+          *inout_hash = FnV1a64(content, *inout_hash);
+          *inout_hash = FnV1a64(";", *inout_hash);
+        }
+        ScanIncludesRecursively(resolved, include_dirs, visited, inout_hash);
+      }
+    }
+  }
+}
+
 }  // namespace
 
 ArtifactCache::ArtifactCache(std::filesystem::path root_dir) : root_dir_(std::move(root_dir)) {}
@@ -61,21 +148,45 @@ std::string ArtifactCache::ComputeKey(const CacheKeyInput& input) noexcept {
 
   std::uint64_t h1 = FnV1a64(input.muda_version, kBasis1);
   h1 = FnV1a64("|", h1);
+  h1 = FnV1a64(input.toolchain_version, h1);
+  h1 = FnV1a64("|", h1);
   h1 = FnV1a64(std_flag, h1);
   h1 = FnV1a64("|", h1);
   h1 = FnV1a64(opt_flag, h1);
+  h1 = FnV1a64("|", h1);
+  h1 = FnV1a64(input.dependencies_hash, h1);
   h1 = FnV1a64("|", h1);
   h1 = FnV1a64(input.msl_source, h1);
 
   std::uint64_t h2 = FnV1a64(input.msl_source, kBasis2);
   h2 = FnV1a64("|", h2);
+  h2 = FnV1a64(input.dependencies_hash, h2);
+  h2 = FnV1a64("|", h2);
   h2 = FnV1a64(std_flag, h2);
   h2 = FnV1a64("|", h2);
   h2 = FnV1a64(opt_flag, h2);
   h2 = FnV1a64("|", h2);
+  h2 = FnV1a64(input.toolchain_version, h2);
+  h2 = FnV1a64("|", h2);
   h2 = FnV1a64(input.muda_version, h2);
 
   return ToHex64(h1) + ToHex64(h2);
+}
+
+std::string ArtifactCache::ComputeDependencyHash(
+    const std::filesystem::path& source_file,
+    const std::vector<std::filesystem::path>& include_dirs) {
+  if (source_file.empty()) {
+    return "";
+  }
+  std::unordered_set<std::string> visited;
+  constexpr std::uint64_t kBasis = 14695981039346656037ull;
+  std::uint64_t hash = kBasis;
+  ScanIncludesRecursively(source_file, include_dirs, visited, &hash);
+  if (visited.empty()) {
+    return "";
+  }
+  return ToHex64(hash);
 }
 
 std::filesystem::path ArtifactCache::EntryPath(std::string_view key) const {

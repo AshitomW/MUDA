@@ -1050,4 +1050,44 @@ DiagnosticCode ExtractFunctionsFromSource(std::string_view source,
   return DiagnosticCode::kOk;
 }
 
+void ExtractIncludes(std::string_view source, std::vector<std::string>* out_includes) {
+  if (out_includes == nullptr) {
+    return;
+  }
+  std::size_t cursor = 0;
+  while (cursor < source.size()) {
+    const std::size_t line_end = source.find('\n', cursor);
+    const std::string_view line = (line_end == std::string_view::npos)
+                                      ? source.substr(cursor)
+                                      : source.substr(cursor, line_end - cursor);
+    std::string_view sv = line;
+    while (!sv.empty() && (sv.front() == ' ' || sv.front() == '\t')) {
+      sv.remove_prefix(1);
+    }
+    if (sv.starts_with('#')) {
+      sv.remove_prefix(1);
+      while (!sv.empty() && (sv.front() == ' ' || sv.front() == '\t')) {
+        sv.remove_prefix(1);
+      }
+      if (sv.starts_with("include")) {
+        sv.remove_prefix(7);
+        while (!sv.empty() && (sv.front() == ' ' || sv.front() == '\t')) {
+          sv.remove_prefix(1);
+        }
+        if (sv.starts_with('"')) {
+          if (line.find("cuda_runtime.h") == std::string_view::npos &&
+              line.find("cuda.h") == std::string_view::npos &&
+              line.find("cuda_fp16.h") == std::string_view::npos) {
+            out_includes->emplace_back(Trim(line));
+          }
+        }
+      }
+    }
+    if (line_end == std::string_view::npos) {
+      break;
+    }
+    cursor = line_end + 1;
+  }
+}
+
 }  // namespace muda::compiler

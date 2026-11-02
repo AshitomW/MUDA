@@ -62,6 +62,8 @@ struct RawFunctionSlice {
 [[nodiscard]] DiagnosticCode ExtractFunctionsFromSource(
     std::string_view source, std::vector<RawFunctionSlice>* out_functions);
 
+void ExtractIncludes(std::string_view source, std::vector<std::string>* out_includes);
+
 [[nodiscard]] DiagnosticCode ExtractSharedMemoryAndLowerBody(
     std::string_view raw_body, std::vector<mmir::SharedAllocation>* out_shared,
     std::string* out_lowered_body, std::span<const KernelParameter> parameters = {});
