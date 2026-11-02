@@ -294,6 +294,49 @@ void CleanReturnType(std::string& return_type) {
   RemoveIdentifier(return_type, "constexpr");
 }
 
+std::string LowerExpression(std::string_view expr) {
+  std::string result;
+  result.reserve(expr.size() + 16);
+  for (std::size_t i = 0; i < expr.size();) {
+    if (!IsIdentifierStart(expr[i])) {
+      result.push_back(expr[i]);
+      ++i;
+      continue;
+    }
+    const std::size_t start = i;
+    ++i;
+    while (i < expr.size() && IsIdentifierChar(expr[i])) {
+      ++i;
+    }
+    const std::string_view word = expr.substr(start, i - start);
+    const std::string_view builtin_rep = BuiltinReplacement(word);
+    std::size_t next = i;
+    while (next < expr.size() && IsSpace(expr[next])) {
+      ++next;
+    }
+    if (!builtin_rep.empty() && next < expr.size() && expr[next] == '.') {
+      std::size_t axis = next + 1;
+      while (axis < expr.size() && IsSpace(expr[axis])) {
+        ++axis;
+      }
+      if (axis < expr.size() && (expr[axis] == 'x' || expr[axis] == 'y' || expr[axis] == 'z')) {
+        result.append(builtin_rep);
+        result.push_back('.');
+        result.push_back(expr[axis]);
+        i = axis + 1;
+        continue;
+      }
+    }
+    const std::string_view math_rep = MathIntrinsicReplacement(word);
+    if (!math_rep.empty() && next < expr.size() && expr[next] == '(') {
+      result.append(math_rep);
+      continue;
+    }
+    result.append(word);
+  }
+  return result;
+}
+
 }  // namespace
 
 DiagnosticCode ExtractSharedMemoryAndLowerBody(std::string_view raw_body,
@@ -410,6 +453,93 @@ DiagnosticCode ExtractSharedMemoryAndLowerBody(std::string_view raw_body,
         result.append("simdgroup_barrier(mem_flags::mem_threadgroup)");
         index = close + 1;
         continue;
+      }
+    }
+
+    if ((word == "__shfl_sync" || word == "__shfl_down_sync" || word == "__shfl_up_sync" ||
+         word == "__shfl_xor_sync" || word == "__ballot_sync" || word == "__any_sync" ||
+         word == "__all_sync" || word == "__activemask" || word == "__ffs" || word == "__ffsll") &&
+        next < body.size() && body[next] == '(') {
+      const std::size_t close = FindMatching(body, next, '(', ')');
+      if (close != std::string_view::npos) {
+        const std::string_view arg_str = body.substr(next + 1, close - next - 1);
+        const std::vector<std::string_view> args = SplitParameters(arg_str);
+        if (word == "__shfl_sync" && args.size() >= 3) {
+          result.append("simd_shuffle(");
+          result.append(LowerExpression(args[1]));
+          result.append(", static_cast<ushort>(");
+          result.append(LowerExpression(args[2]));
+          result.append("))");
+          index = close + 1;
+          continue;
+        }
+        if (word == "__shfl_down_sync" && args.size() >= 3) {
+          result.append("simd_shuffle_down(");
+          result.append(LowerExpression(args[1]));
+          result.append(", static_cast<ushort>(");
+          result.append(LowerExpression(args[2]));
+          result.append("))");
+          index = close + 1;
+          continue;
+        }
+        if (word == "__shfl_up_sync" && args.size() >= 3) {
+          result.append("simd_shuffle_up(");
+          result.append(LowerExpression(args[1]));
+          result.append(", static_cast<ushort>(");
+          result.append(LowerExpression(args[2]));
+          result.append("))");
+          index = close + 1;
+          continue;
+        }
+        if (word == "__shfl_xor_sync" && args.size() >= 3) {
+          result.append("simd_shuffle_xor(");
+          result.append(LowerExpression(args[1]));
+          result.append(", static_cast<ushort>(");
+          result.append(LowerExpression(args[2]));
+          result.append("))");
+          index = close + 1;
+          continue;
+        }
+        if (word == "__ballot_sync" && args.size() >= 2) {
+          result.append("static_cast<uint>(static_cast<ulong>(simd_ballot(");
+          result.append(LowerExpression(args[1]));
+          result.append(" != 0)))");
+          index = close + 1;
+          continue;
+        }
+        if (word == "__any_sync" && args.size() >= 2) {
+          result.append("(simd_any(");
+          result.append(LowerExpression(args[1]));
+          result.append(" != 0) ? 1 : 0)");
+          index = close + 1;
+          continue;
+        }
+        if (word == "__all_sync" && args.size() >= 2) {
+          result.append("(simd_all(");
+          result.append(LowerExpression(args[1]));
+          result.append(" != 0) ? 1 : 0)");
+          index = close + 1;
+          continue;
+        }
+        if (word == "__activemask") {
+          result.append("static_cast<uint>(static_cast<ulong>(simd_ballot(true)))");
+          index = close + 1;
+          continue;
+        }
+        if (word == "__ffs" && !args.empty()) {
+          result.append("([&](auto __val) { return (__val == 0) ? 0 : static_cast<int>(ctz(__val) + 1u); }(");
+          result.append(LowerExpression(args[0]));
+          result.append("))");
+          index = close + 1;
+          continue;
+        }
+        if (word == "__ffsll" && !args.empty()) {
+          result.append("([&](auto __val) { return (__val == 0ull) ? 0 : static_cast<int>(ctz(__val) + 1u); }(");
+          result.append(LowerExpression(args[0]));
+          result.append("))");
+          index = close + 1;
+          continue;
+        }
       }
     }
 

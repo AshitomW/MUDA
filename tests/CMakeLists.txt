@@ -31,7 +31,12 @@ target_link_libraries(corpus_test PRIVATE muda::compiler muda::runtime muda_warn
 target_compile_definitions(corpus_test PRIVATE MUDA_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
 add_test(NAME corpus_test COMMAND corpus_test)
 
-set_tests_properties(compiler_test vector_add_test corpus_test PROPERTIES SKIP_RETURN_CODE 77)
+add_executable(warp_intrinsics_test warp_intrinsics_test.cpp)
+target_link_libraries(warp_intrinsics_test PRIVATE muda::compiler muda::runtime muda_warnings)
+target_compile_definitions(warp_intrinsics_test PRIVATE MUDA_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+add_test(NAME warp_intrinsics_test COMMAND warp_intrinsics_test)
+
+set_tests_properties(compiler_test vector_add_test corpus_test warp_intrinsics_test PROPERTIES SKIP_RETURN_CODE 77)
 
 add_test(NAME mudac_version COMMAND mudac --version)
 add_test(NAME muda_version COMMAND muda version)
