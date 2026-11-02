@@ -625,6 +625,76 @@ DiagnosticCode ExtractSharedMemoryAndLowerBody(std::string_view raw_body,
       }
     }
 
+    if ((word == "__float2half" || word == "__half2float" || word == "__floats2half2_rn" ||
+         word == "__float2half2_rn" || word == "__hadd" || word == "__hsub" || word == "__hmul" ||
+         word == "__hadd2" || word == "__hsub2" || word == "__hmul2") &&
+        next < body.size() && body[next] == '(') {
+      const std::size_t close = FindMatching(body, next, '(', ')');
+      if (close != std::string_view::npos) {
+        const std::string_view arg_str = body.substr(next + 1, close - next - 1);
+        const std::vector<std::string_view> args = SplitParameters(arg_str);
+        if (word == "__float2half" && !args.empty()) {
+          result.append("static_cast<half>(");
+          result.append(LowerExpression(args[0]));
+          result.append(")");
+          index = close + 1;
+          continue;
+        }
+        if (word == "__half2float" && !args.empty()) {
+          result.append("static_cast<float>(");
+          result.append(LowerExpression(args[0]));
+          result.append(")");
+          index = close + 1;
+          continue;
+        }
+        if (word == "__floats2half2_rn" && args.size() >= 2) {
+          result.append("half2(static_cast<half>(");
+          result.append(LowerExpression(args[0]));
+          result.append("), static_cast<half>(");
+          result.append(LowerExpression(args[1]));
+          result.append("))");
+          index = close + 1;
+          continue;
+        }
+        if (word == "__float2half2_rn" && !args.empty()) {
+          result.append("half2(static_cast<half>(");
+          result.append(LowerExpression(args[0]));
+          result.append("), static_cast<half>(");
+          result.append(LowerExpression(args[0]));
+          result.append("))");
+          index = close + 1;
+          continue;
+        }
+        if ((word == "__hadd" || word == "__hadd2") && args.size() >= 2) {
+          result.append("((");
+          result.append(LowerExpression(args[0]));
+          result.append(") + (");
+          result.append(LowerExpression(args[1]));
+          result.append("))");
+          index = close + 1;
+          continue;
+        }
+        if ((word == "__hsub" || word == "__hsub2") && args.size() >= 2) {
+          result.append("((");
+          result.append(LowerExpression(args[0]));
+          result.append(") - (");
+          result.append(LowerExpression(args[1]));
+          result.append("))");
+          index = close + 1;
+          continue;
+        }
+        if ((word == "__hmul" || word == "__hmul2") && args.size() >= 2) {
+          result.append("((");
+          result.append(LowerExpression(args[0]));
+          result.append(") * (");
+          result.append(LowerExpression(args[1]));
+          result.append("))");
+          index = close + 1;
+          continue;
+        }
+      }
+    }
+
     if ((word == "atomicAdd" || word == "atomicSub" || word == "atomicExch" ||
          word == "atomicMin" || word == "atomicMax" || word == "atomicAnd" ||
          word == "atomicOr" || word == "atomicXor" || word == "atomicInc" ||

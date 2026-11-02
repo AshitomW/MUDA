@@ -41,7 +41,12 @@ target_link_libraries(atomics_test PRIVATE muda::compiler muda::runtime muda_war
 target_compile_definitions(atomics_test PRIVATE MUDA_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
 add_test(NAME atomics_test COMMAND atomics_test)
 
-set_tests_properties(compiler_test vector_add_test corpus_test warp_intrinsics_test atomics_test PROPERTIES SKIP_RETURN_CODE 77)
+add_executable(half_vector_test half_vector_test.cpp)
+target_link_libraries(half_vector_test PRIVATE muda::compiler muda::runtime muda_warnings)
+target_compile_definitions(half_vector_test PRIVATE MUDA_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+add_test(NAME half_vector_test COMMAND half_vector_test)
+
+set_tests_properties(compiler_test vector_add_test corpus_test warp_intrinsics_test atomics_test half_vector_test PROPERTIES SKIP_RETURN_CODE 77)
 
 add_test(NAME mudac_version COMMAND mudac --version)
 add_test(NAME muda_version COMMAND muda version)
