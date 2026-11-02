@@ -41,7 +41,7 @@ DiagnosticCode PopulateDeviceFunction(const RawFunctionSlice& slice, mmir::Devic
     return param_status;
   }
 
-  return ExtractSharedMemoryAndLowerBody(slice.body, nullptr, &dev_fn.lowered_body);
+  return ExtractSharedMemoryAndLowerBody(slice.body, nullptr, &dev_fn.lowered_body, dev_fn.parameters);
 }
 
 DiagnosticCode PopulateKernelFunction(const RawFunctionSlice& slice,
@@ -56,7 +56,7 @@ DiagnosticCode PopulateKernelFunction(const RawFunctionSlice& slice,
   }
 
   return ExtractSharedMemoryAndLowerBody(slice.body, &kernel_fn.shared_allocations,
-                                         &kernel_fn.lowered_body);
+                                         &kernel_fn.lowered_body, kernel_fn.parameters);
 }
 
 }  // namespace

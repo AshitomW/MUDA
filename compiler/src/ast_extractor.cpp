@@ -337,11 +337,93 @@ std::string LowerExpression(std::string_view expr) {
   return result;
 }
 
+std::string_view ExtractBaseIdentifier(std::string_view expr) {
+  std::string_view trimmed = Trim(expr);
+  if (!trimmed.empty() && trimmed.front() == '&') {
+    trimmed = Trim(trimmed.substr(1));
+  }
+  std::size_t start = 0;
+  while (start < trimmed.size() && !IsIdentifierStart(trimmed[start])) {
+    ++start;
+  }
+  std::size_t end = start;
+  while (end < trimmed.size() && IsIdentifierChar(trimmed[end])) {
+    ++end;
+  }
+  return (end > start) ? trimmed.substr(start, end - start) : std::string_view{};
+}
+
+struct AtomicTargetInfo {
+  std::string_view addr_space = "device";
+  std::string_view atomic_type = "atomic_int";
+  bool is_float = false;
+};
+
+AtomicTargetInfo ResolveAtomicTarget(
+    std::string_view addr_expr,
+    std::string_view val_expr,
+    const std::vector<mmir::SharedAllocation>* shared_allocs,
+    std::span<const KernelParameter> parameters) {
+  const std::string_view base_id = ExtractBaseIdentifier(addr_expr);
+  AtomicTargetInfo info;
+
+  bool found = false;
+  if (shared_allocs != nullptr) {
+    for (const auto& alloc : *shared_allocs) {
+      if (alloc.name == base_id) {
+        info.addr_space = "threadgroup";
+        info.is_float = (alloc.element_type.scalar == ScalarType::kFloat32);
+        const bool is_uint = (alloc.element_type.scalar == ScalarType::kUInt32 ||
+                              alloc.element_type.scalar == ScalarType::kUInt64);
+        const bool is_64bit = (alloc.element_type.scalar == ScalarType::kInt64 ||
+                               alloc.element_type.scalar == ScalarType::kUInt64);
+        info.atomic_type = is_64bit ? (is_uint ? "atomic_ulong" : "atomic_long")
+                                    : (is_uint ? "atomic_uint" : "atomic_int");
+        found = true;
+        break;
+      }
+    }
+  }
+
+  if (!found) {
+    for (const auto& param : parameters) {
+      if (param.name == base_id) {
+        info.addr_space = "device";
+        info.is_float = (param.type.scalar == ScalarType::kFloat32);
+        const bool is_uint = (param.type.scalar == ScalarType::kUInt32 ||
+                              param.type.scalar == ScalarType::kUInt64);
+        const bool is_64bit = (param.type.scalar == ScalarType::kInt64 ||
+                               param.type.scalar == ScalarType::kUInt64);
+        info.atomic_type = is_64bit ? (is_uint ? "atomic_ulong" : "atomic_long")
+                                    : (is_uint ? "atomic_uint" : "atomic_int");
+        found = true;
+        break;
+      }
+    }
+  }
+
+  if (!found) {
+    info.addr_space = "device";
+    if (val_expr.find('.') != std::string_view::npos ||
+        (!val_expr.empty() && (val_expr.back() == 'f' || val_expr.back() == 'F'))) {
+      info.is_float = true;
+      info.atomic_type = "atomic_uint";
+    } else if (!val_expr.empty() && (val_expr.back() == 'u' || val_expr.back() == 'U')) {
+      info.atomic_type = "atomic_uint";
+    } else {
+      info.atomic_type = "atomic_int";
+    }
+  }
+
+  return info;
+}
+
 }  // namespace
 
 DiagnosticCode ExtractSharedMemoryAndLowerBody(std::string_view raw_body,
                                                std::vector<mmir::SharedAllocation>* out_shared,
-                                               std::string* out_lowered_body) {
+                                               std::string* out_lowered_body,
+                                               std::span<const KernelParameter> parameters) {
   std::string body_without_shared;
   body_without_shared.reserve(raw_body.size());
 
@@ -539,6 +621,242 @@ DiagnosticCode ExtractSharedMemoryAndLowerBody(std::string_view raw_body,
           result.append("))");
           index = close + 1;
           continue;
+        }
+      }
+    }
+
+    if ((word == "atomicAdd" || word == "atomicSub" || word == "atomicExch" ||
+         word == "atomicMin" || word == "atomicMax" || word == "atomicAnd" ||
+         word == "atomicOr" || word == "atomicXor" || word == "atomicInc" ||
+         word == "atomicDec" || word == "atomicCAS") &&
+        next < body.size() && body[next] == '(') {
+      const std::size_t close = FindMatching(body, next, '(', ')');
+      if (close != std::string_view::npos) {
+        const std::string_view arg_str = body.substr(next + 1, close - next - 1);
+        const std::vector<std::string_view> args = SplitParameters(arg_str);
+        if (args.size() >= 2) {
+          const AtomicTargetInfo target = ResolveAtomicTarget(args[0], args[1], out_shared, parameters);
+          const std::string lowered_addr = LowerExpression(args[0]);
+          const std::string lowered_val = LowerExpression(args[1]);
+
+          if (word == "atomicAdd") {
+            if (target.is_float) {
+              result.append("([&](");
+              result.append(target.addr_space);
+              result.append(" auto* __a, float __v) { ");
+              result.append(target.addr_space);
+              result.append(" atomic_uint* __u = reinterpret_cast<");
+              result.append(target.addr_space);
+              result.append(" atomic_uint*>(__a); uint __exp = atomic_load_explicit(__u, memory_order_relaxed); while (!atomic_compare_exchange_weak_explicit(__u, &__exp, as_type<uint>(as_type<float>(__exp) + __v), memory_order_relaxed, memory_order_relaxed)) {} return as_type<float>(__exp); }(");
+              result.append(lowered_addr);
+              result.append(", ");
+              result.append(lowered_val);
+              result.append("))");
+              index = close + 1;
+              continue;
+            }
+            result.append("atomic_fetch_add_explicit(reinterpret_cast<");
+            result.append(target.addr_space);
+            result.push_back(' ');
+            result.append(target.atomic_type);
+            result.append("*>(");
+            result.append(lowered_addr);
+            result.append("), ");
+            result.append(lowered_val);
+            result.append(", memory_order_relaxed)");
+            index = close + 1;
+            continue;
+          }
+
+          if (word == "atomicSub") {
+            result.append("atomic_fetch_sub_explicit(reinterpret_cast<");
+            result.append(target.addr_space);
+            result.push_back(' ');
+            result.append(target.atomic_type);
+            result.append("*>(");
+            result.append(lowered_addr);
+            result.append("), ");
+            result.append(lowered_val);
+            result.append(", memory_order_relaxed)");
+            index = close + 1;
+            continue;
+          }
+
+          if (word == "atomicExch") {
+            if (target.is_float) {
+              result.append("([&](");
+              result.append(target.addr_space);
+              result.append(" auto* __a, float __v) { ");
+              result.append(target.addr_space);
+              result.append(" atomic_uint* __u = reinterpret_cast<");
+              result.append(target.addr_space);
+              result.append(" atomic_uint*>(__a); return as_type<float>(atomic_exchange_explicit(__u, as_type<uint>(__v), memory_order_relaxed)); }(");
+              result.append(lowered_addr);
+              result.append(", ");
+              result.append(lowered_val);
+              result.append("))");
+              index = close + 1;
+              continue;
+            }
+            result.append("atomic_exchange_explicit(reinterpret_cast<");
+            result.append(target.addr_space);
+            result.push_back(' ');
+            result.append(target.atomic_type);
+            result.append("*>(");
+            result.append(lowered_addr);
+            result.append("), ");
+            result.append(lowered_val);
+            result.append(", memory_order_relaxed)");
+            index = close + 1;
+            continue;
+          }
+
+          if (word == "atomicMin") {
+            result.append("atomic_fetch_min_explicit(reinterpret_cast<");
+            result.append(target.addr_space);
+            result.push_back(' ');
+            result.append(target.atomic_type);
+            result.append("*>(");
+            result.append(lowered_addr);
+            result.append("), ");
+            result.append(lowered_val);
+            result.append(", memory_order_relaxed)");
+            index = close + 1;
+            continue;
+          }
+
+          if (word == "atomicMax") {
+            result.append("atomic_fetch_max_explicit(reinterpret_cast<");
+            result.append(target.addr_space);
+            result.push_back(' ');
+            result.append(target.atomic_type);
+            result.append("*>(");
+            result.append(lowered_addr);
+            result.append("), ");
+            result.append(lowered_val);
+            result.append(", memory_order_relaxed)");
+            index = close + 1;
+            continue;
+          }
+
+          if (word == "atomicAnd") {
+            result.append("atomic_fetch_and_explicit(reinterpret_cast<");
+            result.append(target.addr_space);
+            result.push_back(' ');
+            result.append(target.atomic_type);
+            result.append("*>(");
+            result.append(lowered_addr);
+            result.append("), ");
+            result.append(lowered_val);
+            result.append(", memory_order_relaxed)");
+            index = close + 1;
+            continue;
+          }
+
+          if (word == "atomicOr") {
+            result.append("atomic_fetch_or_explicit(reinterpret_cast<");
+            result.append(target.addr_space);
+            result.push_back(' ');
+            result.append(target.atomic_type);
+            result.append("*>(");
+            result.append(lowered_addr);
+            result.append("), ");
+            result.append(lowered_val);
+            result.append(", memory_order_relaxed)");
+            index = close + 1;
+            continue;
+          }
+
+          if (word == "atomicXor") {
+            result.append("atomic_fetch_xor_explicit(reinterpret_cast<");
+            result.append(target.addr_space);
+            result.push_back(' ');
+            result.append(target.atomic_type);
+            result.append("*>(");
+            result.append(lowered_addr);
+            result.append("), ");
+            result.append(lowered_val);
+            result.append(", memory_order_relaxed)");
+            index = close + 1;
+            continue;
+          }
+
+          if (word == "atomicInc") {
+            result.append("([&](");
+            result.append(target.addr_space);
+            result.append(" auto* __a, auto __v) { ");
+            result.append(target.addr_space);
+            result.push_back(' ');
+            result.append(target.atomic_type);
+            result.append("* __u = reinterpret_cast<");
+            result.append(target.addr_space);
+            result.push_back(' ');
+            result.append(target.atomic_type);
+            result.append("*>(__a); auto __exp = atomic_load_explicit(__u, memory_order_relaxed); while (true) { auto __desired = (__exp >= __v) ? 0u : (__exp + 1u); if (atomic_compare_exchange_weak_explicit(__u, &__exp, __desired, memory_order_relaxed, memory_order_relaxed)) { return __exp; } } }(");
+            result.append(lowered_addr);
+            result.append(", ");
+            result.append(lowered_val);
+            result.append("))");
+            index = close + 1;
+            continue;
+          }
+
+          if (word == "atomicDec") {
+            result.append("([&](");
+            result.append(target.addr_space);
+            result.append(" auto* __a, auto __v) { ");
+            result.append(target.addr_space);
+            result.push_back(' ');
+            result.append(target.atomic_type);
+            result.append("* __u = reinterpret_cast<");
+            result.append(target.addr_space);
+            result.push_back(' ');
+            result.append(target.atomic_type);
+            result.append("*>(__a); auto __exp = atomic_load_explicit(__u, memory_order_relaxed); while (true) { auto __desired = ((__exp == 0u) || (__exp > __v)) ? __v : (__exp - 1u); if (atomic_compare_exchange_weak_explicit(__u, &__exp, __desired, memory_order_relaxed, memory_order_relaxed)) { return __exp; } } }(");
+            result.append(lowered_addr);
+            result.append(", ");
+            result.append(lowered_val);
+            result.append("))");
+            index = close + 1;
+            continue;
+          }
+
+          if (word == "atomicCAS" && args.size() >= 3) {
+            const std::string lowered_cmp = LowerExpression(args[1]);
+            const std::string lowered_desired = LowerExpression(args[2]);
+            if (target.is_float) {
+              result.append("([&](");
+              result.append(target.addr_space);
+              result.append(" auto* __p, float __cmp, float __v) { ");
+              result.append(target.addr_space);
+              result.append(" atomic_uint* __u = reinterpret_cast<");
+              result.append(target.addr_space);
+              result.append(" atomic_uint*>(__p); uint __exp = as_type<uint>(__cmp); while (!atomic_compare_exchange_weak_explicit(__u, &__exp, as_type<uint>(__v), memory_order_relaxed, memory_order_relaxed)) { if (__exp != as_type<uint>(__cmp)) { break; } } return as_type<float>(__exp); }(");
+              result.append(lowered_addr);
+              result.append(", ");
+              result.append(lowered_cmp);
+              result.append(", ");
+              result.append(lowered_desired);
+              result.append("))");
+              index = close + 1;
+              continue;
+            }
+            result.append("([&](");
+            result.append(target.addr_space);
+            result.append(" auto* __p, auto __cmp, auto __v) { auto __exp = __cmp; while (!atomic_compare_exchange_weak_explicit(reinterpret_cast<");
+            result.append(target.addr_space);
+            result.push_back(' ');
+            result.append(target.atomic_type);
+            result.append("*>(__p), &__exp, __v, memory_order_relaxed, memory_order_relaxed)) { if (__exp != __cmp) { break; } } return __exp; }(");
+            result.append(lowered_addr);
+            result.append(", ");
+            result.append(lowered_cmp);
+            result.append(", ");
+            result.append(lowered_desired);
+            result.append("))");
+            index = close + 1;
+            continue;
+          }
         }
       }
     }

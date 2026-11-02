@@ -27,7 +27,7 @@ extern const std::array<TypeMappingEntry, 45> kTypeTable;
 extern const std::array<TypeMappingEntry, 4> kFloatTypeTable;
 extern const std::array<BuiltinMappingEntry, 4> kBuiltinTable;
 extern const std::array<BuiltinMappingEntry, 24> kMathIntrinsicTable;
-extern const std::array<std::string_view, 15> kUnsupportedConstructs;
+extern const std::array<std::string_view, 4> kUnsupportedConstructs;
 
 [[nodiscard]] std::optional<DataType> ResolveCudaType(std::string_view spelling) noexcept;
 [[nodiscard]] std::string_view BuiltinReplacement(std::string_view word) noexcept;

@@ -192,6 +192,32 @@ __global__ void warp_kernel(const float* in, float* out) {
     return 1;
   }
 
+  // Translation test for atomics
+  const char* atomic_source = R"CUDA(
+__global__ void atomic_kernel(int* d_int, float* d_float) {
+  atomicAdd(d_int, 1);
+  atomicSub(d_int, 2);
+  atomicMin(d_int, 0);
+  atomicMax(d_int, 100);
+  atomicAdd(d_float, 2.5f);
+  atomicCAS(d_int, 0, 42);
+}
+)CUDA";
+  const muda::compiler::TranslationResult atomic_tr =
+      muda::compiler::TranslateCudaToMsl(atomic_source);
+  if (!atomic_tr.ok()) {
+    std::cerr << "atomic translation failed: " << atomic_tr.error() << "\n";
+    return 1;
+  }
+  if (atomic_tr.msl.find("atomic_fetch_add_explicit(") == std::string::npos ||
+      atomic_tr.msl.find("atomic_fetch_sub_explicit(") == std::string::npos ||
+      atomic_tr.msl.find("atomic_fetch_min_explicit(") == std::string::npos ||
+      atomic_tr.msl.find("atomic_fetch_max_explicit(") == std::string::npos ||
+      atomic_tr.msl.find("atomic_compare_exchange_weak_explicit(") == std::string::npos) {
+    std::cerr << "atomic MSL missing expected lowered constructs:\n" << atomic_tr.msl << "\n";
+    return 1;
+  }
+
   const muda::compiler::TranslationResult fn_ptr =
       muda::compiler::TranslateCudaToMsl("__global__ void k(void (*fn)(int), int* out) {}");
   if (fn_ptr.ok() || fn_ptr.code != muda::compiler::DiagnosticCode::kFunctionPointerUnsupported) {

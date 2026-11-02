@@ -96,21 +96,10 @@ const std::array<BuiltinMappingEntry, 24> kMathIntrinsicTable = {{
     {"__brevll", "reverse_bits"},
 }};
 
-const std::array<std::string_view, 15> kUnsupportedConstructs = {{
+const std::array<std::string_view, 4> kUnsupportedConstructs = {{
     "__constant__",
     "__managed__",
     "cooperative_groups",
-    "atomicAdd",
-    "atomicSub",
-    "atomicCAS",
-    "atomicExch",
-    "atomicMin",
-    "atomicMax",
-    "atomicInc",
-    "atomicDec",
-    "atomicAnd",
-    "atomicOr",
-    "atomicXor",
     "printf",
 }};
 

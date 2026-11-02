@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -63,6 +64,6 @@ struct RawFunctionSlice {
 
 [[nodiscard]] DiagnosticCode ExtractSharedMemoryAndLowerBody(
     std::string_view raw_body, std::vector<mmir::SharedAllocation>* out_shared,
-    std::string* out_lowered_body);
+    std::string* out_lowered_body, std::span<const KernelParameter> parameters = {});
 
 }  // namespace muda::compiler
