@@ -154,6 +154,70 @@ __global__ void dyn_shared_kernel(const float* in, float* out, int n) {
     return 1;
   }
 
+  // Translation test for warp intrinsics
+  const char* warp_source = R"CUDA(
+__global__ void warp_kernel(const float* in, float* out) {
+  float v = in[threadIdx.x];
+  v += __shfl_down_sync(0xFFFFFFFFu, v, 1);
+  v += __shfl_up_sync(0xFFFFFFFFu, v, 2);
+  v += __shfl_xor_sync(0xFFFFFFFFu, v, 4);
+  v += __shfl_sync(0xFFFFFFFFu, v, 0);
+  unsigned int b = __ballot_sync(0xFFFFFFFFu, v > 0.0f);
+  int any_p = __any_sync(0xFFFFFFFFu, v > 0.0f);
+  int all_p = __all_sync(0xFFFFFFFFu, v > 0.0f);
+  unsigned int mask = __activemask();
+  int pop = __popc(b) + __popcll(static_cast<unsigned long long>(b));
+  int lz = __clz(b) + __clzll(static_cast<unsigned long long>(b));
+  int fs = __ffs(static_cast<int>(b)) + __ffsll(static_cast<long long>(b));
+  unsigned int rv = __brev(b) + static_cast<unsigned int>(__brevll(static_cast<unsigned long long>(b)));
+  out[threadIdx.x] = v + static_cast<float>(b + any_p + all_p + mask + pop + lz + fs + rv);
+}
+)CUDA";
+  const muda::compiler::TranslationResult warp_tr = muda::compiler::TranslateCudaToMsl(warp_source);
+  if (!warp_tr.ok()) {
+    std::cerr << "warp intrinsic translation failed: " << warp_tr.error() << "\n";
+    return 1;
+  }
+  if (warp_tr.msl.find("simd_shuffle_down(v, static_cast<ushort>(1))") == std::string::npos ||
+      warp_tr.msl.find("simd_shuffle_up(v, static_cast<ushort>(2))") == std::string::npos ||
+      warp_tr.msl.find("simd_shuffle_xor(v, static_cast<ushort>(4))") == std::string::npos ||
+      warp_tr.msl.find("simd_shuffle(v, static_cast<ushort>(0))") == std::string::npos ||
+      warp_tr.msl.find("simd_ballot(") == std::string::npos ||
+      warp_tr.msl.find("simd_any(") == std::string::npos ||
+      warp_tr.msl.find("simd_all(") == std::string::npos ||
+      warp_tr.msl.find("popcount(b)") == std::string::npos ||
+      warp_tr.msl.find("clz(b)") == std::string::npos ||
+      warp_tr.msl.find("reverse_bits(b)") == std::string::npos) {
+    std::cerr << "warp MSL missing expected lowered constructs:\n" << warp_tr.msl << "\n";
+    return 1;
+  }
+
+  // Translation test for atomics
+  const char* atomic_source = R"CUDA(
+__global__ void atomic_kernel(int* d_int, float* d_float) {
+  atomicAdd(d_int, 1);
+  atomicSub(d_int, 2);
+  atomicMin(d_int, 0);
+  atomicMax(d_int, 100);
+  atomicAdd(d_float, 2.5f);
+  atomicCAS(d_int, 0, 42);
+}
+)CUDA";
+  const muda::compiler::TranslationResult atomic_tr =
+      muda::compiler::TranslateCudaToMsl(atomic_source);
+  if (!atomic_tr.ok()) {
+    std::cerr << "atomic translation failed: " << atomic_tr.error() << "\n";
+    return 1;
+  }
+  if (atomic_tr.msl.find("atomic_fetch_add_explicit(") == std::string::npos ||
+      atomic_tr.msl.find("atomic_fetch_sub_explicit(") == std::string::npos ||
+      atomic_tr.msl.find("atomic_fetch_min_explicit(") == std::string::npos ||
+      atomic_tr.msl.find("atomic_fetch_max_explicit(") == std::string::npos ||
+      atomic_tr.msl.find("atomic_compare_exchange_weak_explicit(") == std::string::npos) {
+    std::cerr << "atomic MSL missing expected lowered constructs:\n" << atomic_tr.msl << "\n";
+    return 1;
+  }
+
   const muda::compiler::TranslationResult fn_ptr =
       muda::compiler::TranslateCudaToMsl("__global__ void k(void (*fn)(int), int* out) {}");
   if (fn_ptr.ok() || fn_ptr.code != muda::compiler::DiagnosticCode::kFunctionPointerUnsupported) {

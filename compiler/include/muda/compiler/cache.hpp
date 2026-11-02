@@ -20,8 +20,10 @@ namespace muda::compiler {
 struct CacheKeyInput {
   std::string_view msl_source;
   std::string_view muda_version;
+  std::string_view toolchain_version;
   MetalStandard metal_standard = MetalStandard::kMetal32;
   OptimizationLevel optimization = OptimizationLevel::kO3;
+  std::string_view dependencies_hash;
 };
 
 class ArtifactCache {
@@ -30,6 +32,9 @@ class ArtifactCache {
 
   [[nodiscard]] static std::filesystem::path DefaultCacheDirectory();
   [[nodiscard]] static std::string ComputeKey(const CacheKeyInput& input) noexcept;
+  [[nodiscard]] static std::string ComputeDependencyHash(
+      const std::filesystem::path& source_file,
+      const std::vector<std::filesystem::path>& include_dirs);
 
   [[nodiscard]] std::optional<std::vector<std::uint8_t>> Lookup(std::string_view key) const;
   bool Store(std::string_view key, std::span<const std::uint8_t> metallib_bytes) const;

@@ -40,8 +40,8 @@ cudaError_t MemoryManager::Allocate(void** dev_ptr, std::size_t size, unsigned i
     if (aligned_size > device.maxBufferLength) {
       return RecordError(cudaErrorMemoryAllocation);
     }
-    id<MTLBuffer> buffer = [device newBufferWithLength:aligned_size
-                                               options:MTLResourceStorageModeShared];
+    std::size_t allocated_capacity = 0;
+    id<MTLBuffer> buffer = buffer_pool_.Acquire(size, device, &allocated_capacity);
     if (buffer == nil || buffer.contents == nullptr) {
       return RecordError(cudaErrorMemoryAllocation);
     }
@@ -52,7 +52,7 @@ cudaError_t MemoryManager::Allocate(void** dev_ptr, std::size_t size, unsigned i
       allocations_.Insert(AllocationRecord{
           .base_address = DeviceAddress::FromPointer(contents),
           .size = size,
-          .capacity = aligned_size,
+          .capacity = allocated_capacity,
           .attach_mode = *attach_mode,
           .memory_type = memory_type,
           .buffer = buffer,
@@ -106,7 +106,11 @@ cudaError_t MemoryManager::Free(void* dev_ptr, StreamManager& streams,
     if (!removed.has_value()) {
       return RecordError(cudaErrorInvalidValue);
     }
-    (void)streams.SynchronizeDevice(default_queue);
+    const cudaError_t sync_status = streams.SynchronizeDevice(default_queue);
+    if (sync_status != cudaSuccess) {
+      return sync_status;
+    }
+    buffer_pool_.Release(removed->buffer, removed->capacity);
     removed.reset();
   }
   return cudaSuccess;
@@ -127,7 +131,8 @@ cudaError_t MemoryManager::MemGetInfo(size_t* free_bytes, size_t* total_bytes,
   }
   std::shared_lock<std::shared_mutex> lock(mutex_);
   const auto total = static_cast<std::size_t>(device.recommendedMaxWorkingSetSize);
-  const std::size_t allocated = allocations_.TotalAllocatedBytes();
+  const std::size_t allocated =
+      allocations_.TotalAllocatedBytes() + buffer_pool_.TotalCachedBytes();
   *total_bytes = total;
   *free_bytes = (allocated <= total) ? (total - allocated) : 0;
   return cudaSuccess;
@@ -212,6 +217,7 @@ std::size_t MemoryManager::TotalAllocatedBytes() const noexcept {
 void MemoryManager::Reset() noexcept {
   std::unique_lock<std::shared_mutex> lock(mutex_);
   allocations_.Clear();
+  buffer_pool_.Purge();
 }
 
 }  // namespace muda::runtime::cudart

@@ -12,6 +12,7 @@
 #include <shared_mutex>
 
 #include "allocation_table.hpp"
+#include "buffer_pool.hpp"
 #include "cuda_runtime.h"
 #include "stream_manager.hpp"
 
@@ -70,11 +71,15 @@ class MemoryManager {
   [[nodiscard]] bool ValidateRange(DeviceAddress addr, std::size_t count) const noexcept;
   [[nodiscard]] std::size_t TotalAllocatedBytes() const noexcept;
 
+  [[nodiscard]] BufferPool& GetBufferPool() noexcept { return buffer_pool_; }
+  [[nodiscard]] const BufferPool& GetBufferPool() const noexcept { return buffer_pool_; }
+
   void Reset() noexcept;
 
  private:
   mutable std::shared_mutex mutex_;
   AllocationTable allocations_;
+  BufferPool buffer_pool_;
 };
 
 }  // namespace muda::runtime::cudart

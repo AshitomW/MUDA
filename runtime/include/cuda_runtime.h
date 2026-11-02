@@ -191,6 +191,17 @@ typedef struct dim3 {
 #endif
 } dim3;
 
+typedef struct __half {
+  unsigned short x;
+} __half;
+typedef __half half;
+
+typedef struct __half2 {
+  __half x;
+  __half y;
+} __half2;
+typedef __half2 half2;
+
 typedef struct float2 {
   float x, y;
 } float2;
@@ -218,6 +229,70 @@ typedef struct uint3 {
 typedef struct uint4 {
   unsigned int x, y, z, w;
 } uint4;
+
+static inline float2 make_float2(float x, float y) {
+  float2 v;
+  v.x = x;
+  v.y = y;
+  return v;
+}
+static inline float3 make_float3(float x, float y, float z) {
+  float3 v;
+  v.x = x;
+  v.y = y;
+  v.z = z;
+  return v;
+}
+static inline float4 make_float4(float x, float y, float z, float w) {
+  float4 v;
+  v.x = x;
+  v.y = y;
+  v.z = z;
+  v.w = w;
+  return v;
+}
+static inline int2 make_int2(int x, int y) {
+  int2 v;
+  v.x = x;
+  v.y = y;
+  return v;
+}
+static inline int3 make_int3(int x, int y, int z) {
+  int3 v;
+  v.x = x;
+  v.y = y;
+  v.z = z;
+  return v;
+}
+static inline int4 make_int4(int x, int y, int z, int w) {
+  int4 v;
+  v.x = x;
+  v.y = y;
+  v.z = z;
+  v.w = w;
+  return v;
+}
+static inline uint2 make_uint2(unsigned int x, unsigned int y) {
+  uint2 v;
+  v.x = x;
+  v.y = y;
+  return v;
+}
+static inline uint3 make_uint3(unsigned int x, unsigned int y, unsigned int z) {
+  uint3 v;
+  v.x = x;
+  v.y = y;
+  v.z = z;
+  return v;
+}
+static inline uint4 make_uint4(unsigned int x, unsigned int y, unsigned int z, unsigned int w) {
+  uint4 v;
+  v.x = x;
+  v.y = y;
+  v.z = z;
+  v.w = w;
+  return v;
+}
 
 /**
  * @brief Opaque CUDA stream handle.

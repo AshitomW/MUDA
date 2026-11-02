@@ -5,8 +5,11 @@
 
 #pragma once
 
+#include <string>
+
 namespace muda::compiler {
 
 [[nodiscard]] bool MetalToolchainAvailable();
+[[nodiscard]] std::string GetMetalToolchainVersion() noexcept;
 
 }  // namespace muda::compiler

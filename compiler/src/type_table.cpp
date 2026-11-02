@@ -69,7 +69,7 @@ const std::array<BuiltinMappingEntry, 4> kBuiltinTable = {{
     {"gridDim", "threadgroups_per_grid"},
 }};
 
-const std::array<BuiltinMappingEntry, 18> kMathIntrinsicTable = {{
+const std::array<BuiltinMappingEntry, 36> kMathIntrinsicTable = {{
     {"fmaf", "fma"},
     {"__fmaf_rn", "fma"},
     {"sqrtf", "sqrt"},
@@ -88,26 +88,30 @@ const std::array<BuiltinMappingEntry, 18> kMathIntrinsicTable = {{
     {"__cosf", "fast::cos"},
     {"tanf", "tan"},
     {"powf", "pow"},
+    {"__popc", "popcount"},
+    {"__popcll", "popcount"},
+    {"__clz", "clz"},
+    {"__clzll", "clz"},
+    {"__brev", "reverse_bits"},
+    {"__brevll", "reverse_bits"},
+    {"make_float2", "float2"},
+    {"make_float3", "float3"},
+    {"make_float4", "float4"},
+    {"make_int2", "int2"},
+    {"make_int3", "int3"},
+    {"make_int4", "int4"},
+    {"make_uint2", "uint2"},
+    {"make_uint3", "uint3"},
+    {"make_uint4", "uint4"},
+    {"make_half2", "half2"},
+    {"__hfma", "fma"},
+    {"__hfma2", "fma"},
 }};
 
-const std::array<std::string_view, 18> kUnsupportedConstructs = {{
+const std::array<std::string_view, 4> kUnsupportedConstructs = {{
     "__constant__",
     "__managed__",
     "cooperative_groups",
-    "atomicAdd",
-    "atomicSub",
-    "atomicCAS",
-    "atomicExch",
-    "atomicMin",
-    "atomicMax",
-    "atomicInc",
-    "atomicDec",
-    "atomicAnd",
-    "atomicOr",
-    "atomicXor",
-    "__shfl_sync",
-    "__shfl_up_sync",
-    "__shfl_down_sync",
     "printf",
 }};
 
