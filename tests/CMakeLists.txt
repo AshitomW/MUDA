@@ -54,6 +54,26 @@ add_executable(compiler_cache_test compiler_cache_test.cpp)
 target_link_libraries(compiler_cache_test PRIVATE muda::compiler muda::runtime muda_warnings)
 add_test(NAME compiler_cache_test COMMAND compiler_cache_test)
 
+add_executable(ptx_lexer_test ptx/ptx_lexer_test.cpp)
+target_link_libraries(ptx_lexer_test PRIVATE muda::compiler muda_warnings)
+add_test(NAME ptx_lexer_test COMMAND ptx_lexer_test)
+
+add_executable(ptx_parser_test ptx/ptx_parser_test.cpp)
+target_link_libraries(ptx_parser_test PRIVATE muda::compiler muda_warnings)
+add_test(NAME ptx_parser_test COMMAND ptx_parser_test)
+
+add_executable(ptx_to_mmir_test ptx/ptx_to_mmir_test.cpp)
+target_link_libraries(ptx_to_mmir_test PRIVATE muda::compiler muda::runtime muda_warnings)
+add_test(NAME ptx_to_mmir_test COMMAND ptx_to_mmir_test)
+
+add_executable(driver_api_test driver_api_test.cpp)
+target_link_libraries(driver_api_test PRIVATE cuda muda::runtime muda_warnings)
+add_test(NAME driver_api_test COMMAND driver_api_test)
+
+add_executable(numba_mock_test numba_mock_test.cpp)
+target_link_libraries(numba_mock_test PRIVATE cuda muda::runtime muda_warnings)
+add_test(NAME numba_mock_test COMMAND numba_mock_test)
+
 set_tests_properties(compiler_test vector_add_test corpus_test warp_intrinsics_test atomics_test half_vector_test PROPERTIES SKIP_RETURN_CODE 77)
 
 add_test(NAME mudac_version COMMAND mudac --version)
