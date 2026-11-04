@@ -72,8 +72,8 @@ set(MUDA_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
 file(MAKE_DIRECTORY "${MUDA_GENERATED_DIR}/muda")
 configure_file(cmake/Version.hpp.in "${MUDA_GENERATED_DIR}/muda/version.hpp" @ONLY)
 
-add_subdirectory(runtime)
 add_subdirectory(compiler)
+add_subdirectory(runtime)
 add_subdirectory(tools)
 
 if(MUDA_BUILD_TESTS)
