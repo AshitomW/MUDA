@@ -23,6 +23,7 @@
 
 #include "muda/compiler/cache.hpp"
 #include "muda/compiler/host_rewriter.hpp"
+#include "muda/compiler/ptx/ptx_to_mmir.hpp"
 #include "muda/compiler/toolchain.hpp"
 #include "muda/compiler/translator.hpp"
 #include "muda/version.hpp"
@@ -453,7 +454,12 @@ CompileResult Compile(const CompileOptions& options) {
     return Failure(DiagnosticCode::kCannotOpenInput);
   }
 
-  TranslationResult translation = TranslateCudaToMsl(source);
+  TranslationResult translation;
+  if (options.input.extension() == ".ptx") {
+    translation = ptx::TranslatePtxToMsl(source);
+  } else {
+    translation = TranslateCudaToMsl(source);
+  }
   if (!translation.ok()) {
     return Failure(translation.code);
   }
