@@ -6,6 +6,14 @@ add_library(
   src/host_rewriter.cpp
   src/mmir.cpp
   src/process.cpp
+  src/ptx/arena.cpp
+  src/ptx/cfg.cpp
+  src/ptx/lexer.cpp
+  src/ptx/parser.cpp
+  src/ptx/ptx_to_mmir.cpp
+  src/ptx/structurizer.cpp
+  src/ptx/tokens.cpp
+  src/ptx/type_inference.cpp
   src/toolchain.cpp
   src/translator.cpp
   src/type_table.cpp

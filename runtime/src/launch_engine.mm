@@ -285,6 +285,17 @@ cudaError_t LaunchEngine::RegisterKernelFromData(const void* host_func, const vo
   }
 }
 
+cudaError_t LaunchEngine::RegisterKernelPipeline(
+    const void* host_func, std::span<const mudaKernelParamDesc> params,
+    id<MTLComputePipelineState> pipeline) noexcept {
+  if (host_func == nullptr || pipeline == nil) {
+    return RecordError(cudaErrorInvalidValue);
+  }
+  std::unique_lock<std::shared_mutex> lock(mutex_);
+  kernels_.Insert(host_func, params, pipeline);
+  return cudaSuccess;
+}
+
 void LaunchEngine::Clear() noexcept {
   std::unique_lock<std::shared_mutex> lock(mutex_);
   kernels_.Clear();
