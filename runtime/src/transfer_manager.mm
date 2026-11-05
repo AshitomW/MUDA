@@ -32,16 +32,24 @@ cudaError_t ValidateEndpoints(const std::optional<AllocationRecord>& dst_record,
   const bool dst_valid = AllocationTable::IsRangeValid(dst_ptr, dst_addr, dst_span);
   const bool src_valid = AllocationTable::IsRangeValid(src_ptr, src_addr, src_span);
 
+  const bool dst_is_host =
+      (dst_ptr == nullptr || (dst_ptr->memory_type == cudaMemoryTypeHost && dst_valid));
+  const bool src_is_host =
+      (src_ptr == nullptr || (src_ptr->memory_type == cudaMemoryTypeHost && src_valid));
+  const bool dst_is_device =
+      (dst_ptr != nullptr && dst_ptr->memory_type != cudaMemoryTypeHost && dst_valid);
+  const bool src_is_device =
+      (src_ptr != nullptr && src_ptr->memory_type != cudaMemoryTypeHost && src_valid);
+
   switch (kind) {
     case cudaMemcpyHostToHost:
-      return (dst_ptr == nullptr && src_ptr == nullptr) ? cudaSuccess
-                                                        : RecordError(cudaErrorInvalidValue);
+      return (dst_is_host && src_is_host) ? cudaSuccess : RecordError(cudaErrorInvalidValue);
     case cudaMemcpyHostToDevice:
-      return (dst_valid && src_ptr == nullptr) ? cudaSuccess : RecordError(cudaErrorInvalidValue);
+      return (dst_is_device && src_is_host) ? cudaSuccess : RecordError(cudaErrorInvalidValue);
     case cudaMemcpyDeviceToHost:
-      return (src_valid && dst_ptr == nullptr) ? cudaSuccess : RecordError(cudaErrorInvalidValue);
+      return (src_is_device && dst_is_host) ? cudaSuccess : RecordError(cudaErrorInvalidValue);
     case cudaMemcpyDeviceToDevice:
-      return (dst_valid && src_valid) ? cudaSuccess : RecordError(cudaErrorInvalidValue);
+      return (dst_is_device && src_is_device) ? cudaSuccess : RecordError(cudaErrorInvalidValue);
     case cudaMemcpyDefault:
       if ((dst_ptr != nullptr && !dst_valid) || (src_ptr != nullptr && !src_valid)) {
         return RecordError(cudaErrorInvalidValue);

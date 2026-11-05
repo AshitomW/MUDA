@@ -78,3 +78,36 @@ set_tests_properties(compiler_test vector_add_test corpus_test warp_intrinsics_t
 
 add_test(NAME mudac_version COMMAND mudac --version)
 add_test(NAME muda_version COMMAND muda version)
+
+find_program(UV_EXECUTABLE uv)
+if(UV_EXECUTABLE)
+  add_test(
+    NAME python_driver_abi_test
+    COMMAND ${UV_EXECUTABLE} run --with numpy python3 ${CMAKE_CURRENT_SOURCE_DIR}/python/test_cuda_driver_abi.py
+  )
+  set_tests_properties(
+    python_driver_abi_test
+    PROPERTIES
+      ENVIRONMENT "CUDA_DRIVER_LIBRARY=$<TARGET_FILE:cuda>"
+  )
+
+  add_test(
+    NAME python_numba_cuda_test
+    COMMAND ${UV_EXECUTABLE} run --with numba --with numpy python3 ${CMAKE_CURRENT_SOURCE_DIR}/python/test_numba_cuda.py
+  )
+  set_tests_properties(
+    python_numba_cuda_test
+    PROPERTIES
+      ENVIRONMENT "NUMBA_CUDA_DRIVER=$<TARGET_FILE:cuda>"
+  )
+
+  add_test(
+    NAME python_cuda_library_test
+    COMMAND ${UV_EXECUTABLE} run --with numba --with numpy python3 ${CMAKE_CURRENT_SOURCE_DIR}/python/test_python_cuda_library.py
+  )
+  set_tests_properties(
+    python_cuda_library_test
+    PROPERTIES
+      ENVIRONMENT "NUMBA_CUDA_DRIVER=$<TARGET_FILE:cuda>"
+  )
+endif()
