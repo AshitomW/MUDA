@@ -378,7 +378,12 @@ void LowerInstruction(const Instruction& inst, const TypeInference& types, std::
   // Handle mov
   if (inst.opcode == TokenKind::kOpMov && inst.operands.size() >= 2) {
     const std::string src = TranslateOperand(inst.operands[1]);
-    *body += dest + " = " + src + ";\n  ";
+    if (types.IsPointer(inst.operands[1].name) &&
+        (inst.operands[0].name.starts_with("%rd") || inst.operands[0].name.starts_with("rd"))) {
+      *body += dest + " = reinterpret_cast<uint64_t>(" + src + ");\n  ";
+    } else {
+      *body += dest + " = " + src + ";\n  ";
+    }
     return;
   }
 }

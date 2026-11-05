@@ -218,6 +218,9 @@ void TypeInference::PropagateInstructions(const Function& fn) {
           InferredType& dest_info = reg_types_[dest_reg];
           if (!dest_info.is_pointer || dest_info.address_space != src_info->address_space) {
             dest_info = *src_info;
+            if (dest_reg.starts_with("%rd") || dest_reg.starts_with("rd")) {
+              dest_info.data_type = DataType{ScalarType::kUInt64, VectorWidth::k1};
+            }
             changed = true;
           }
         }
