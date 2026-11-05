@@ -100,4 +100,14 @@ if(UV_EXECUTABLE)
     PROPERTIES
       ENVIRONMENT "NUMBA_CUDA_DRIVER=$<TARGET_FILE:cuda>"
   )
+
+  add_test(
+    NAME python_cuda_library_test
+    COMMAND ${UV_EXECUTABLE} run --with numba --with numpy python3 ${CMAKE_CURRENT_SOURCE_DIR}/python/test_python_cuda_library.py
+  )
+  set_tests_properties(
+    python_cuda_library_test
+    PROPERTIES
+      ENVIRONMENT "NUMBA_CUDA_DRIVER=$<TARGET_FILE:cuda>"
+  )
 endif()
