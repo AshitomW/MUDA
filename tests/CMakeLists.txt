@@ -74,6 +74,22 @@ add_executable(numba_mock_test numba_mock_test.cpp)
 target_link_libraries(numba_mock_test PRIVATE cuda muda::runtime muda_warnings)
 add_test(NAME numba_mock_test COMMAND numba_mock_test)
 
+add_executable(cublas_test cublas_test.cpp)
+target_link_libraries(cublas_test PRIVATE muda::cublas cuda muda_warnings)
+add_test(NAME cublas_test COMMAND cublas_test)
+
+add_executable(cufft_test cufft_test.cpp)
+target_link_libraries(cufft_test PRIVATE muda::cufft cuda muda_warnings)
+add_test(NAME cufft_test COMMAND cufft_test)
+
+add_executable(cudnn_test cudnn_test.cpp)
+target_link_libraries(cudnn_test PRIVATE muda::cudnn cuda muda_warnings)
+add_test(NAME cudnn_test COMMAND cudnn_test)
+
+add_executable(cusparse_test cusparse_test.cpp)
+target_link_libraries(cusparse_test PRIVATE muda::cusparse cuda muda_warnings)
+add_test(NAME cusparse_test COMMAND cusparse_test)
+
 set_tests_properties(compiler_test vector_add_test corpus_test warp_intrinsics_test atomics_test half_vector_test PROPERTIES SKIP_RETURN_CODE 77)
 
 add_test(NAME mudac_version COMMAND mudac --version)
@@ -89,6 +105,16 @@ if(UV_EXECUTABLE)
     python_driver_abi_test
     PROPERTIES
       ENVIRONMENT "CUDA_DRIVER_LIBRARY=$<TARGET_FILE:cuda>"
+  )
+
+  add_test(
+    NAME python_libraries_abi_test
+    COMMAND ${UV_EXECUTABLE} run --with numpy python3 ${CMAKE_CURRENT_SOURCE_DIR}/python/test_cuda_libraries_abi.py
+  )
+  set_tests_properties(
+    python_libraries_abi_test
+    PROPERTIES
+      ENVIRONMENT "CUDA_DRIVER_LIBRARY=$<TARGET_FILE:cuda>;CUBLAS_LIBRARY=$<TARGET_FILE:cublas>;CUFFT_LIBRARY=$<TARGET_FILE:cufft>;CUDNN_LIBRARY=$<TARGET_FILE:cudnn>;CUSPARSE_LIBRARY=$<TARGET_FILE:cusparse>"
   )
 
   add_test(

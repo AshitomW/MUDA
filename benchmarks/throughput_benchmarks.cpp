@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include "cublas_v2.h"
 #include "cuda_runtime.h"
 
 namespace muda::bench {
@@ -152,6 +153,8 @@ ThroughputBenchmarkSuiteResults RunThroughputBenchmarks(
   // 2. Compute Throughput: GEMM Scaling (N = 256, 512, 1024, 2048, 4096)
   // -------------------------------------------------------------------------
   const std::vector<int> gemm_dimensions = {256, 512, 1024, 2048, 4096};
+  cublasHandle_t cublas_handle = nullptr;
+  (void)cublasCreate(&cublas_handle);
 
   for (int n : gemm_dimensions) {
     const std::size_t kBytes = static_cast<std::size_t>(n * n) * sizeof(float);
@@ -240,6 +243,29 @@ ThroughputBenchmarkSuiteResults RunThroughputBenchmarks(
       });
     }
 
+    // 2D. cuBLAS SGEMM (MPSMatrixMultiplication + LRU Plan Cache)
+    BenchmarkStatistics cublas_gflops{};
+    if (cublas_handle != nullptr) {
+      const float alpha = 1.0f;
+      const float beta = 0.0f;
+      const auto cublas_stats = MeasureGpuDuration(gemm_config, [&]() {
+        (void)cublasSgemm(cublas_handle, CUBLAS_OP_N, CUBLAS_OP_N, n, n, n, &alpha, d_a, n, d_b, n,
+                          &beta, d_c, n);
+      });
+      cublas_gflops = cublas_stats.Transform([=](double s) { return gflops_total / s; });
+
+      PrintBenchmarkReport(title_reg, "cuBLAS SGEMM (MPS Fast-Path + Plan Cache)", gemm_config,
+                           "GFLOP/s", cublas_gflops, "GPU Hardware Execution");
+      suite_results.records.push_back({
+          .suite = "Throughput - Compute GEMM",
+          .implementation = "cuBLAS SGEMM MPS (N=" + std::to_string(n) + ")",
+          .timing_domain = "GPU Hardware Execution",
+          .metric_unit = "GFLOP/s",
+          .config = gemm_config,
+          .stats = cublas_gflops,
+      });
+    }
+
     const double reg_speedup = reg_gflops.median_val / tiled_gflops.median_val;
     std::printf(">> GEMM N = %4d Scaling Summary (Apple M1 FP32 Peak = %.1f GFLOP/s):\n", n,
                 kM1Fp32PeakGFlops);
@@ -257,11 +283,19 @@ ThroughputBenchmarkSuiteResults RunThroughputBenchmarks(
           multi_gflops.median_val, (multi_gflops.median_val / kM1Fp32PeakGFlops) * 100.0,
           multi_speedup_shared, multi_speedup_reg);
     }
+    if (cublas_handle != nullptr) {
+      std::printf("   cuBLAS SGEMM (MPS)     : %6.2f GFLOP/s (%4.1f%% FP32 peak)\n",
+                  cublas_gflops.median_val, (cublas_gflops.median_val / kM1Fp32PeakGFlops) * 100.0);
+    }
     std::printf("-----------------------------------------------------------------\n\n");
 
     (void)cudaFree(d_c);
     (void)cudaFree(d_b);
     (void)cudaFree(d_a);
+  }
+
+  if (cublas_handle != nullptr) {
+    (void)cublasDestroy(cublas_handle);
   }
 
   return suite_results;

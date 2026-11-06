@@ -42,9 +42,23 @@ target_link_libraries(
 
 add_library(
   cuda SHARED
+  src/allocation_table.mm
+  src/buffer.mm
+  src/buffer_pool.mm
+  src/cuda_runtime.mm
+  src/device.mm
+  src/device_manager.mm
   src/driver_api.mm
+  src/error_state.cpp
+  src/event_manager.mm
+  src/kernel.mm
+  src/kernel_registry.mm
+  src/launch_engine.mm
+  src/memory_manager.mm
   src/module_manager.mm
   src/runtime_context.mm
+  src/stream_manager.mm
+  src/transfer_manager.mm
 )
 target_include_directories(
   cuda
@@ -59,7 +73,6 @@ target_compile_options(cuda PRIVATE "$<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>")
 target_link_libraries(
   cuda
   PRIVATE
-    muda_runtime
     muda_compiler
     muda_warnings
     "-framework Foundation"
