@@ -74,6 +74,7 @@ configure_file(cmake/Version.hpp.in "${MUDA_GENERATED_DIR}/muda/version.hpp" @ON
 
 add_subdirectory(compiler)
 add_subdirectory(runtime)
+add_subdirectory(libraries)
 add_subdirectory(tools)
 
 if(MUDA_BUILD_TESTS)

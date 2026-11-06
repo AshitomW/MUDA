@@ -16,6 +16,18 @@ namespace muda::runtime::cudart {
 enum class HandleKind : std::uint8_t {
   kStream = 1,
   kEvent = 2,
+  kCublasHandle = 3,
+  kCufftPlan = 4,
+  kCudnnHandle = 5,
+  kCudnnTensorDesc = 6,
+  kCudnnFilterDesc = 7,
+  kCudnnConvDesc = 8,
+  kCudnnActivationDesc = 9,
+  kCudnnPoolingDesc = 10,
+  kCusparseHandle = 11,
+  kCusparseSpMatDesc = 12,
+  kCusparseDnVecDesc = 13,
+  kCusparseDnMatDesc = 14,
 };
 
 /**
