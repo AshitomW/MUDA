@@ -1,0 +1,14 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+
+set_and_check(MUDA_INCLUDE_DIR "@PACKAGE_CMAKE_INSTALL_INCLUDEDIR@")
+set_and_check(MUDA_LIBRARY_DIR "@PACKAGE_CMAKE_INSTALL_LIBDIR@")
+set_and_check(MUDA_BINARY_DIR "@PACKAGE_CMAKE_INSTALL_BINDIR@")
+set_and_check(MUDA_CUDA_HOME "@PACKAGE_CMAKE_INSTALL_DATAROOTDIR@/muda/cuda-home")
+
+set(MUDA_VERSION "@PROJECT_VERSION@")
+set(MUDA_FOUND TRUE)
+
+check_required_components(MUDA)
+

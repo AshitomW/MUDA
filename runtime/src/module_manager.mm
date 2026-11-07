@@ -20,6 +20,11 @@
 #include "muda/runtime/driver_types.hpp"
 
 namespace muda::runtime::driver {
+namespace {
+
+constexpr std::string_view kNvrtcCudaMarker = "// MUDA_NVRTC_CUDA_SOURCE";
+
+}  // namespace
 
 CUresult ModuleManager::LoadPtx(std::string_view ptx_source, CUmodule* out_module,
                                 id<MTLDevice> device, cudart::LaunchEngine& launcher) noexcept {
@@ -27,7 +32,17 @@ CUresult ModuleManager::LoadPtx(std::string_view ptx_source, CUmodule* out_modul
     return CUDA_ERROR_INVALID_VALUE;
   }
 
-  const muda::compiler::TranslationResult tr = muda::compiler::ptx::TranslatePtxToMsl(ptx_source);
+  muda::compiler::TranslationResult tr;
+  const std::size_t nvrtc_pos = ptx_source.find(kNvrtcCudaMarker);
+  if (nvrtc_pos != std::string_view::npos) {
+    std::string_view cuda_src = ptx_source.substr(nvrtc_pos + kNvrtcCudaMarker.size());
+    while (!cuda_src.empty() && (cuda_src.front() == '\n' || cuda_src.front() == '\r')) {
+      cuda_src.remove_prefix(1);
+    }
+    tr = muda::compiler::TranslateCudaToMsl(cuda_src);
+  } else {
+    tr = muda::compiler::ptx::TranslatePtxToMsl(ptx_source);
+  }
   if (!tr.ok()) {
     return CUDA_ERROR_INVALID_PTX;
   }

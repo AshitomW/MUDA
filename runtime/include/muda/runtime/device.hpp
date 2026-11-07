@@ -30,7 +30,10 @@ struct DeviceInfo {
   std::string name;
   BackendKind backend = BackendKind::kMetal;
   std::uint64_t recommended_working_set_bytes = 0;
+  std::uint64_t max_buffer_length = 0;
   std::uint32_t max_threads_per_threadgroup = 0;
+  std::uint32_t max_threadgroup_memory_bytes = 0;
+  bool unified_memory = true;
 };
 
 struct DeviceStorage;

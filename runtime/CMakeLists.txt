@@ -80,6 +80,23 @@ target_link_libraries(
 )
 set_target_properties(cuda PROPERTIES OUTPUT_NAME "cuda")
 
-install(TARGETS muda_runtime cuda ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR} LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
+add_library(cudart SHARED src/cudart_shim.cpp)
+add_library(muda::cudart ALIAS cudart)
+target_include_directories(
+  cudart
+  PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<BUILD_INTERFACE:${MUDA_GENERATED_DIR}>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+)
+target_compile_features(cudart PUBLIC cxx_std_20)
+target_link_libraries(cudart PUBLIC cuda PRIVATE muda_warnings)
+set_target_properties(cudart PROPERTIES OUTPUT_NAME "cudart")
+
+install(
+  TARGETS muda_runtime cuda cudart
+  ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+  LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+)
 install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 install(FILES ${MUDA_GENERATED_DIR}/muda/version.hpp DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/muda)

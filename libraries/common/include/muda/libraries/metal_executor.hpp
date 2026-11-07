@@ -10,7 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
-#include <mutex>
+#include <shared_mutex>
 #include <span>
 #include <string>
 #include <string_view>
@@ -53,7 +53,8 @@ struct ShaderArg {
     return arg;
   }
 
-  [[nodiscard]] static ShaderArg RawBuffer(id<MTLBuffer> buf, std::size_t byte_offset = 0) noexcept {
+  [[nodiscard]] static ShaderArg RawBuffer(id<MTLBuffer> buf,
+                                           std::size_t byte_offset = 0) noexcept {
     ShaderArg arg;
     arg.kind = Kind::kBuffer;
     arg.buffer = buf;
@@ -111,7 +112,7 @@ class LibraryExecutor {
  private:
   LibraryExecutor() = default;
 
-  mutable std::mutex mutex_;
+  mutable std::shared_mutex mutex_;
   id<MTLDevice> cached_device_ = nil;
   std::unordered_map<std::string, id<MTLLibrary>> libraries_;
   std::unordered_map<std::string, id<MTLComputePipelineState>> pipelines_;

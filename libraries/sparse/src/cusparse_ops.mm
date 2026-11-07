@@ -3,14 +3,13 @@
  * @brief Implementation of cuSPARSE CSR SpMV and SpMM operations on Apple Silicon GPUs.
  */
 
-#include "cusparse_descriptors.hpp"
-
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 
 #include <array>
 #include <string_view>
 
+#include "cusparse_descriptors.hpp"
 #include "muda/libraries/metal_executor.hpp"
 
 namespace muda::libraries::sparse {
@@ -131,19 +130,45 @@ cusparseStatus_t cusparseSpMV(cusparseHandle_t handle, cusparseOperation_t opA, 
     buf_val = buf_y;
   }
 
-  const std::string_view k_name = (a_d->value_type == CUDA_R_32F) ? "muda_cusparse_spmv_csr_f32"
-                                                                  : "muda_cusparse_spmv_csr_f16";
-  id<MTLComputePipelineState> pipe = GetCusparsePipeline(k_name);
-  if (pipe == nil) {
-    return CUSPARSE_STATUS_INTERNAL_ERROR;
-  }
-
   const auto u_rows = static_cast<std::uint32_t>(a_d->rows);
   const auto u_cols = static_cast<std::uint32_t>(a_d->cols);
   const int idx_base = (a_d->idx_base == CUSPARSE_INDEX_BASE_ONE) ? 1 : 0;
   const float alpha_val = *static_cast<const float*>(alpha);
   const float beta_val = *static_cast<const float*>(beta);
   const std::uint32_t u_op = (opA == CUSPARSE_OPERATION_NON_TRANSPOSE) ? 0u : 1u;
+
+  cudaStream_t stream = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(ctx->mutex);
+    stream = ctx->stream;
+  }
+
+  // Fast Path: Coalesced warp-per-row CSR SpMV for non-transpose when average nnz/row >= 8
+  if (u_op == 0u && a_d->rows > 0 && (a_d->nnz / a_d->rows) >= 8) {
+    const std::string_view warp_k = (a_d->value_type == CUDA_R_32F)
+                                        ? "muda_cusparse_spmv_csr_warp_f32"
+                                        : "muda_cusparse_spmv_csr_warp_f16";
+    id<MTLComputePipelineState> warp_pipe = GetCusparsePipeline(warp_k);
+    if (warp_pipe != nil) {
+      const std::array<ShaderArg, 9> warp_args = {
+          ShaderArg::Buffer(buf_row), ShaderArg::Buffer(buf_col),  ShaderArg::Buffer(buf_val),
+          ShaderArg::Buffer(buf_x),   ShaderArg::Buffer(buf_y),    ShaderArg::Value(u_rows),
+          ShaderArg::Value(idx_base), ShaderArg::Value(alpha_val), ShaderArg::Value(beta_val),
+      };
+      const std::size_t gx = (static_cast<std::size_t>(u_rows) + 7u) / 8u;
+      return (exec.DispatchThreadgroups(warp_pipe, MTLSizeMake(gx, 1, 1), MTLSizeMake(256, 1, 1),
+                                        warp_args, 0, stream) == cudaSuccess)
+                 ? CUSPARSE_STATUS_SUCCESS
+                 : CUSPARSE_STATUS_EXECUTION_FAILED;
+    }
+  }
+
+  const std::string_view k_name =
+      (a_d->value_type == CUDA_R_32F) ? "muda_cusparse_spmv_csr_f32" : "muda_cusparse_spmv_csr_f16";
+  id<MTLComputePipelineState> pipe = GetCusparsePipeline(k_name);
+  if (pipe == nil) {
+    return CUSPARSE_STATUS_INTERNAL_ERROR;
+  }
 
   const std::array<ShaderArg, 11> args = {
       ShaderArg::Buffer(buf_row), ShaderArg::Buffer(buf_col), ShaderArg::Buffer(buf_val),
@@ -152,11 +177,6 @@ cusparseStatus_t cusparseSpMV(cusparseHandle_t handle, cusparseOperation_t opA, 
       ShaderArg::Value(beta_val), ShaderArg::Value(u_op),
   };
 
-  cudaStream_t stream = nullptr;
-  {
-    std::lock_guard<std::mutex> lock(ctx->mutex);
-    stream = ctx->stream;
-  }
   const auto out_threads = static_cast<std::size_t>(expected_y);
   return (exec.DispatchThreads1D(pipe, out_threads, 256, args, 0, stream) == cudaSuccess)
              ? CUSPARSE_STATUS_SUCCESS
@@ -194,11 +214,10 @@ cusparseStatus_t cusparseSpMM_bufferSize(cusparseHandle_t handle, cusparseOperat
 }
 
 cusparseStatus_t cusparseSpMM(cusparseHandle_t handle, cusparseOperation_t opA,
-                              cusparseOperation_t opB, const void* alpha,
-                              cusparseSpMatDescr_t matA, cusparseDnMatDescr_t matB,
-                              const void* beta, cusparseDnMatDescr_t matC,
-                              cudaDataType /*computeType*/, cusparseSpMMAlg_t /*alg*/,
-                              void* /*externalBuffer*/) {
+                              cusparseOperation_t opB, const void* alpha, cusparseSpMatDescr_t matA,
+                              cusparseDnMatDescr_t matB, const void* beta,
+                              cusparseDnMatDescr_t matC, cudaDataType /*computeType*/,
+                              cusparseSpMMAlg_t /*alg*/, void* /*externalBuffer*/) {
   if (alpha == nullptr || beta == nullptr) {
     return CUSPARSE_STATUS_INVALID_VALUE;
   }
@@ -274,11 +293,11 @@ cusparseStatus_t cusparseSpMM(cusparseHandle_t handle, cusparseOperation_t opA,
   const float beta_val = *static_cast<const float*>(beta);
 
   const std::array<ShaderArg, 17> args = {
-      ShaderArg::Buffer(buf_row), ShaderArg::Buffer(buf_col), ShaderArg::Buffer(buf_val),
-      ShaderArg::Buffer(buf_b),   ShaderArg::Buffer(buf_c),   ShaderArg::Value(u_arows),
-      ShaderArg::Value(u_acols),  ShaderArg::Value(u_ncols),  ShaderArg::Value(u_ldb),
-      ShaderArg::Value(u_ldc),    ShaderArg::Value(u_ord_b),  ShaderArg::Value(u_ord_c),
-      ShaderArg::Value(u_opa),    ShaderArg::Value(u_opb),    ShaderArg::Value(idx_base),
+      ShaderArg::Buffer(buf_row),  ShaderArg::Buffer(buf_col), ShaderArg::Buffer(buf_val),
+      ShaderArg::Buffer(buf_b),    ShaderArg::Buffer(buf_c),   ShaderArg::Value(u_arows),
+      ShaderArg::Value(u_acols),   ShaderArg::Value(u_ncols),  ShaderArg::Value(u_ldb),
+      ShaderArg::Value(u_ldc),     ShaderArg::Value(u_ord_b),  ShaderArg::Value(u_ord_c),
+      ShaderArg::Value(u_opa),     ShaderArg::Value(u_opb),    ShaderArg::Value(idx_base),
       ShaderArg::Value(alpha_val), ShaderArg::Value(beta_val),
   };
 
@@ -288,10 +307,37 @@ cusparseStatus_t cusparseSpMM(cusparseHandle_t handle, cusparseOperation_t opA,
     stream = ctx->stream;
   }
 
-  const std::size_t bx = 16;
-  const std::size_t by = 16;
-  const std::size_t gx = (static_cast<std::size_t>(a_eff_r) + bx - 1) / bx;
-  const std::size_t gy = (static_cast<std::size_t>(b_eff_c) + by - 1) / by;
+  // Fast Path: Row-major non-transposed CSR SpMM using 128-bit float4 vectorization
+  if (u_opa == 0u && u_opb == 0u && b_d->order == CUSPARSE_ORDER_ROW &&
+      c_d->order == CUSPARSE_ORDER_ROW && (u_ncols & 3u) == 0u && (u_ldb & 3u) == 0u &&
+      (u_ldc & 3u) == 0u && (buf_b.offset & 15u) == 0u && (buf_c.offset & 15u) == 0u) {
+    id<MTLComputePipelineState> vec4_pipe = GetCusparsePipeline("muda_cusparse_spmm_csr_vec4_f32");
+    if (vec4_pipe != nil) {
+      const std::uint32_t ncols_v4 = u_ncols >> 2u;
+      const std::uint32_t ldb_v4 = u_ldb >> 2u;
+      const std::uint32_t ldc_v4 = u_ldc >> 2u;
+      const std::array<ShaderArg, 12> v4_args = {
+          ShaderArg::Buffer(buf_row), ShaderArg::Buffer(buf_col),  ShaderArg::Buffer(buf_val),
+          ShaderArg::Buffer(buf_b),   ShaderArg::Buffer(buf_c),    ShaderArg::Value(u_arows),
+          ShaderArg::Value(ncols_v4), ShaderArg::Value(ldb_v4),    ShaderArg::Value(ldc_v4),
+          ShaderArg::Value(idx_base), ShaderArg::Value(alpha_val), ShaderArg::Value(beta_val),
+      };
+      const std::size_t bx4 = 32;
+      const std::size_t by4 = 8;
+      const std::size_t gx4 = (static_cast<std::size_t>(ncols_v4) + bx4 - 1) / bx4;
+      const std::size_t gy4 = (static_cast<std::size_t>(u_arows) + by4 - 1) / by4;
+      return (exec.DispatchThreadgroups(vec4_pipe, MTLSizeMake(gx4, gy4, 1),
+                                        MTLSizeMake(bx4, by4, 1), v4_args, 0,
+                                        stream) == cudaSuccess)
+                 ? CUSPARSE_STATUS_SUCCESS
+                 : CUSPARSE_STATUS_EXECUTION_FAILED;
+    }
+  }
+
+  const std::size_t bx = 32;
+  const std::size_t by = 8;
+  const std::size_t gx = (static_cast<std::size_t>(b_eff_c) + bx - 1) / bx;
+  const std::size_t gy = (static_cast<std::size_t>(a_eff_r) + by - 1) / by;
   return (exec.DispatchThreadgroups(pipe, MTLSizeMake(gx, gy, 1), MTLSizeMake(bx, by, 1), args, 0,
                                     stream) == cudaSuccess)
              ? CUSPARSE_STATUS_SUCCESS
@@ -299,4 +345,3 @@ cusparseStatus_t cusparseSpMM(cusparseHandle_t handle, cusparseOperation_t opA,
 }
 
 }  // extern "C"
-

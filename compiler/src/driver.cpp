@@ -13,6 +13,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <span>
 #include <sstream>
 #include <string>
@@ -41,10 +42,8 @@ CompileResult Failure(DiagnosticCode code) noexcept {
   return result;
 }
 
-CompileResult Success(std::filesystem::path output_path,
-                      std::filesystem::path metallib_path,
-                      std::string kernel_name,
-                      bool cache_hit = false) {
+CompileResult Success(std::filesystem::path output_path, std::filesystem::path metallib_path,
+                      std::string kernel_name, bool cache_hit = false) {
   CompileResult result;
   result.status = Status::kOk;
   result.code = DiagnosticCode::kOk;
@@ -117,6 +116,9 @@ OutputKind ResolveOutputKind(const CompileOptions& options) {
   if (ext == ".o" || ext == ".obj") {
     return OutputKind::kObject;
   }
+  if (ext == ".dylib" || ext == ".so") {
+    return OutputKind::kSharedLibrary;
+  }
   return OutputKind::kExecutable;
 }
 
@@ -135,6 +137,9 @@ std::filesystem::path ResolveOutputPath(const CompileOptions& options, OutputKin
       break;
     case OutputKind::kObject:
       output.replace_extension(".o");
+      break;
+    case OutputKind::kSharedLibrary:
+      output.replace_extension(".dylib");
       break;
     case OutputKind::kExecutable:
       output = options.input.stem();
@@ -211,8 +216,7 @@ struct IntermediateArtifacts {
 };
 
 IntermediateArtifacts MakeIntermediateArtifacts(const std::filesystem::path& output,
-                                                OutputKind output_kind,
-                                                IntermediatePolicy policy) {
+                                                OutputKind output_kind, IntermediatePolicy policy) {
   const std::filesystem::path base_dir = ResolveBaseDirectory(output, policy);
   const std::string stem = MakeIntermediateStem(output, policy);
   IntermediateArtifacts artifacts;
@@ -247,8 +251,7 @@ bool IsCacheEnabled(const CompileOptions& options) noexcept {
 }
 
 bool CompileMetalToAir(const std::filesystem::path& metal_path,
-                       const std::filesystem::path& air_path,
-                       const CompileOptions& options) {
+                       const std::filesystem::path& air_path, const CompileOptions& options) {
   std::vector<std::string> compile_args = {
       "xcrun",
       "--sdk",
@@ -267,6 +270,9 @@ bool CompileMetalToAir(const std::filesystem::path& metal_path,
   for (const auto& inc : options.include_dirs) {
     compile_args.emplace_back("-I");
     compile_args.emplace_back(inc.string());
+  }
+  for (const std::string& def : options.defines) {
+    compile_args.emplace_back(def);
   }
   compile_args.emplace_back("-c");
   compile_args.emplace_back(metal_path.string());
@@ -292,8 +298,8 @@ struct BuildMetallibResult {
 };
 
 BuildMetallibResult BuildOrLoadMetallib(const IntermediateArtifacts& artifacts,
-                                       std::string_view msl_source,
-                                       const CompileOptions& options) {
+                                        std::string_view msl_source,
+                                        const CompileOptions& options) {
   const bool cache_enabled = IsCacheEnabled(options);
   const std::filesystem::path cache_root =
       !options.cache_dir.empty() ? options.cache_dir : ArtifactCache::DefaultCacheDirectory();
@@ -302,10 +308,13 @@ BuildMetallibResult BuildOrLoadMetallib(const IntermediateArtifacts& artifacts,
   std::string cache_key;
   if (cache_enabled) {
     const std::string toolchain_ver = GetMetalToolchainVersion();
-    const std::string dep_hash =
-        !options.input.empty()
-            ? ArtifactCache::ComputeDependencyHash(options.input, options.include_dirs)
-            : std::string();
+    std::string dep_hash = !options.input.empty() ? ArtifactCache::ComputeDependencyHash(
+                                                        options.input, options.include_dirs)
+                                                  : std::string();
+    for (const std::string& def : options.defines) {
+      dep_hash += "|";
+      dep_hash += def;
+    }
     const CacheKeyInput key_input{
         .msl_source = msl_source,
         .muda_version = muda::kVersion,
@@ -321,14 +330,12 @@ BuildMetallibResult BuildOrLoadMetallib(const IntermediateArtifacts& artifacts,
   }
 
   if (!CompileMetalToAir(artifacts.metal_path, artifacts.air_path, options)) {
-    return BuildMetallibResult{.code = DiagnosticCode::kMetalCompilationFailed,
-                               .cache_hit = false};
+    return BuildMetallibResult{.code = DiagnosticCode::kMetalCompilationFailed, .cache_hit = false};
   }
 
   if (!LinkAirToMetallib(artifacts.air_path, artifacts.metallib_path)) {
     RemoveFile(artifacts.metallib_path);
-    return BuildMetallibResult{.code = DiagnosticCode::kMetallibLinkFailed,
-                               .cache_hit = false};
+    return BuildMetallibResult{.code = DiagnosticCode::kMetallibLinkFailed, .cache_hit = false};
   }
 
   if (cache_enabled) {
@@ -341,8 +348,7 @@ BuildMetallibResult BuildOrLoadMetallib(const IntermediateArtifacts& artifacts,
   return BuildMetallibResult{.code = DiagnosticCode::kOk, .cache_hit = false};
 }
 
-DiagnosticCode PrepareHostSource(const std::string& source,
-                                 const TranslationResult& translation,
+DiagnosticCode PrepareHostSource(const std::string& source, const TranslationResult& translation,
                                  const IntermediateArtifacts& artifacts) {
   std::vector<std::uint8_t> metallib_bytes;
   if (!ReadBinaryFile(artifacts.metallib_path, &metallib_bytes)) {
@@ -394,6 +400,15 @@ std::vector<std::string> BuildHostCompilerArgs(const CompileOptions& options,
     host_args.emplace_back("-I");
     host_args.emplace_back(inc.string());
   }
+  for (const std::string& def : options.defines) {
+    host_args.emplace_back(def);
+  }
+  if (options.position_independent || output_kind == OutputKind::kSharedLibrary) {
+    host_args.emplace_back("-fPIC");
+  }
+  for (const std::string& flag : options.host_compiler_flags) {
+    host_args.emplace_back(flag);
+  }
 
   if (output_kind == OutputKind::kObject) {
     host_args.emplace_back("-c");
@@ -401,15 +416,39 @@ std::vector<std::string> BuildHostCompilerArgs(const CompileOptions& options,
     host_args.emplace_back("-o");
     host_args.emplace_back(output.string());
   } else {
+    if (output_kind == OutputKind::kSharedLibrary) {
+      host_args.emplace_back("-dynamiclib");
+    }
     host_args.emplace_back(artifacts.host_cpp_path.string());
-#ifdef MUDA_DEFAULT_RUNTIME_LIB_FILE
-    host_args.emplace_back(MUDA_DEFAULT_RUNTIME_LIB_FILE);
+    if (output_kind == OutputKind::kSharedLibrary) {
+#ifdef MUDA_DEFAULT_CUDA_DYLIB_FILE
+      std::error_code ec;
+      const std::filesystem::path dylib_path(MUDA_DEFAULT_CUDA_DYLIB_FILE);
+      if (std::filesystem::exists(dylib_path, ec)) {
+        host_args.emplace_back(dylib_path.string());
+        if (dylib_path.has_parent_path()) {
+          host_args.emplace_back("-Wl,-rpath," + dylib_path.parent_path().string());
+        }
+      } else
 #endif
+      {
+#ifdef MUDA_DEFAULT_RUNTIME_LIB_FILE
+        host_args.emplace_back(MUDA_DEFAULT_RUNTIME_LIB_FILE);
+#endif
+      }
+    } else {
+#ifdef MUDA_DEFAULT_RUNTIME_LIB_FILE
+      host_args.emplace_back(MUDA_DEFAULT_RUNTIME_LIB_FILE);
+#endif
+    }
     for (const std::filesystem::path& lib_dir : options.library_dirs) {
       host_args.emplace_back("-L" + lib_dir.string());
     }
     for (const std::string& lib : options.libraries) {
       host_args.emplace_back("-l" + lib);
+    }
+    for (const std::string& lflag : options.linker_flags) {
+      host_args.emplace_back(lflag);
     }
     host_args.emplace_back("-framework");
     host_args.emplace_back("Foundation");
@@ -421,8 +460,7 @@ std::vector<std::string> BuildHostCompilerArgs(const CompileOptions& options,
   return host_args;
 }
 
-DiagnosticCode CompileHostCode(const CompileOptions& options,
-                               OutputKind output_kind,
+DiagnosticCode CompileHostCode(const CompileOptions& options, OutputKind output_kind,
                                const IntermediateArtifacts& artifacts,
                                const std::filesystem::path& output) {
   const std::vector<std::string> host_args =
@@ -436,8 +474,6 @@ DiagnosticCode CompileHostCode(const CompileOptions& options,
 }
 
 }  // namespace
-
-
 
 CompileResult Compile(const CompileOptions& options) {
   if (options.input.empty()) {
@@ -464,6 +500,21 @@ CompileResult Compile(const CompileOptions& options) {
     return Failure(translation.code);
   }
 
+  if (options.print_metadata) {
+    std::cout << "{\n  \"kernels\": [\n";
+    const auto& kernels =
+        !translation.kernels.empty() ? translation.kernels : std::vector{translation.kernel};
+    for (std::size_t i = 0; i < kernels.size(); ++i) {
+      const auto& k = kernels[i];
+      std::cout << "    {\"name\": \"" << k.name << "\", \"msl_name\": \""
+                << (k.msl_name.empty() ? k.name : k.msl_name)
+                << "\", \"param_count\": " << k.parameters.size()
+                << ", \"dynamic_shared\": " << (k.uses_dynamic_shared_memory ? "true" : "false")
+                << "}" << (i + 1 < kernels.size() ? "," : "") << "\n";
+    }
+    std::cout << "  ]\n}\n";
+  }
+
   const std::filesystem::path output = ResolveOutputPath(options, output_kind);
   if (!EnsureOutputDirectoryExists(output)) {
     return Failure(DiagnosticCode::kCannotCreateOutputDir);
@@ -487,8 +538,7 @@ CompileResult Compile(const CompileOptions& options) {
     return Failure(DiagnosticCode::kCannotWriteMetalSource);
   }
 
-  const BuildMetallibResult metallib_result =
-      BuildOrLoadMetallib(artifacts, msl_source, options);
+  const BuildMetallibResult metallib_result = BuildOrLoadMetallib(artifacts, msl_source, options);
   if (!metallib_result.ok()) {
     return Failure(metallib_result.code);
   }
@@ -498,21 +548,19 @@ CompileResult Compile(const CompileOptions& options) {
                    std::move(translation.kernel.name), metallib_result.cache_hit);
   }
 
-  const DiagnosticCode host_prep_code =
-      PrepareHostSource(source, translation, artifacts);
+  const DiagnosticCode host_prep_code = PrepareHostSource(source, translation, artifacts);
   if (host_prep_code != DiagnosticCode::kOk) {
     return Failure(host_prep_code);
   }
 
-  const DiagnosticCode host_compile_code =
-      CompileHostCode(options, output_kind, artifacts, output);
+  const DiagnosticCode host_compile_code = CompileHostCode(options, output_kind, artifacts, output);
   if (host_compile_code != DiagnosticCode::kOk) {
     return Failure(host_compile_code);
   }
 
-  const std::filesystem::path metallib_output =
-      (options.intermediates == IntermediatePolicy::kKeep) ? artifacts.metallib_path
-                                                           : std::filesystem::path{};
+  const std::filesystem::path metallib_output = (options.intermediates == IntermediatePolicy::kKeep)
+                                                    ? artifacts.metallib_path
+                                                    : std::filesystem::path{};
   return Success(output, metallib_output, std::move(translation.kernel.name),
                  metallib_result.cache_hit);
 }

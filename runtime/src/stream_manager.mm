@@ -59,6 +59,7 @@ cudaError_t StreamManager::StreamCreate(cudaStream_t* out_stream, unsigned int f
     state->queue = queue;
     state->flags = flags;
     *out_stream = streams_.Insert<cudaStream_t>(std::move(state));
+    active_stream_count_.fetch_add(1, std::memory_order_release);
     return cudaSuccess;
   }
 }
@@ -71,6 +72,7 @@ cudaError_t StreamManager::StreamDestroy(cudaStream_t stream_handle) noexcept {
   if (state == nullptr) {
     return RecordError(cudaErrorInvalidResourceHandle);
   }
+  active_stream_count_.fetch_sub(1, std::memory_order_release);
   @autoreleasepool {
     id<MTLCommandBuffer> s_last = nil;
     {
@@ -86,6 +88,25 @@ cudaError_t StreamManager::StreamDestroy(cudaStream_t stream_handle) noexcept {
 cudaError_t StreamManager::StreamSynchronize(cudaStream_t stream_handle,
                                              id<MTLCommandQueue> default_queue) noexcept {
   if (stream_handle == nullptr) {
+    if (default_queue == nil) {
+      return RecordError(cudaErrorInitializationError);
+    }
+    if (active_stream_count_.load(std::memory_order_acquire) == 0) {
+      if (default_active_dispatches_.load(std::memory_order_relaxed) == 0 &&
+          default_pending_commands_.load(std::memory_order_acquire) == 0) {
+        return ConsumeAsyncError();
+      }
+      @autoreleasepool {
+        id<MTLCommandBuffer> def_last = nil;
+        {
+          std::lock_guard<std::mutex> def_lock(default_stream_mutex_);
+          FlushDefaultStreamLocked();
+          def_last = default_last_command_buffer_;
+        }
+        WaitForQueue(default_queue, def_last, &default_pending_commands_);
+        return ConsumeAsyncError();
+      }
+    }
     return SynchronizeDevice(default_queue);
   }
   std::shared_ptr<StreamState> stream = streams_.Lookup(stream_handle);
@@ -106,7 +127,7 @@ cudaError_t StreamManager::StreamSynchronize(cudaStream_t stream_handle,
 
 cudaError_t StreamManager::StreamQuery(cudaStream_t stream_handle) noexcept {
   if (stream_handle == nullptr) {
-    {
+    if (default_active_dispatches_.load(std::memory_order_relaxed) > 0) {
       std::lock_guard<std::mutex> def_lock(default_stream_mutex_);
       FlushDefaultStreamLocked();
     }
@@ -129,14 +150,25 @@ cudaError_t StreamManager::SynchronizeDevice(id<MTLCommandQueue> default_queue) 
   if (default_queue == nil) {
     return RecordError(cudaErrorInitializationError);
   }
-  id<MTLCommandBuffer> default_last_cmd = nil;
-  std::vector<std::shared_ptr<StreamState>> active_streams = streams_.SnapshotAll();
+  if (!HasPendingWork()) {
+    return ConsumeAsyncError();
+  }
 
+  id<MTLCommandBuffer> default_last_cmd = nil;
   {
     std::lock_guard<std::mutex> def_lock(default_stream_mutex_);
     FlushDefaultStreamLocked();
     default_last_cmd = default_last_command_buffer_;
   }
+
+  if (active_stream_count_.load(std::memory_order_acquire) == 0) {
+    @autoreleasepool {
+      WaitForQueue(default_queue, default_last_cmd, &default_pending_commands_);
+      return ConsumeAsyncError();
+    }
+  }
+
+  std::vector<std::shared_ptr<StreamState>> active_streams = streams_.SnapshotAll();
   for (const std::shared_ptr<StreamState>& stream : active_streams) {
     if (stream != nullptr) {
       std::lock_guard<std::mutex> stream_lock(stream->mutex);
@@ -229,26 +261,49 @@ void StreamManager::CommitStreamCommandBuffer(StreamState* stream,
   }
 }
 
+void StreamManager::EndActiveEncodersLocked(StreamState* stream) noexcept {
+  if (stream != nullptr) {
+    if (stream->active_encoder != nil) {
+      [stream->active_encoder endEncoding];
+      stream->active_encoder = nil;
+      stream->active_pipeline = nil;
+      stream->encoder_state.Reset();
+    }
+    if (stream->active_blit_encoder != nil) {
+      [stream->active_blit_encoder endEncoding];
+      stream->active_blit_encoder = nil;
+    }
+  } else {
+    if (default_active_encoder_ != nil) {
+      [default_active_encoder_ endEncoding];
+      default_active_encoder_ = nil;
+      default_active_pipeline_ = nil;
+      default_encoder_state_.Reset();
+    }
+    if (default_active_blit_encoder_ != nil) {
+      [default_active_blit_encoder_ endEncoding];
+      default_active_blit_encoder_ = nil;
+    }
+  }
+}
+
 void StreamManager::FlushStreamLocked(StreamState* stream) noexcept {
-  if (stream == nullptr || stream->active_encoder == nil) {
+  if (stream == nullptr || stream->active_command_buffer == nil) {
     return;
   }
-  [stream->active_encoder endEncoding];
-  stream->active_encoder = nil;
-  stream->active_pipeline = nil;
+  EndActiveEncodersLocked(stream);
   stream->active_dispatches = 0;
   CommitStreamCommandBufferLocked(stream, stream->active_command_buffer);
   stream->active_command_buffer = nil;
 }
 
 void StreamManager::FlushDefaultStreamLocked() noexcept {
-  if (default_active_encoder_ == nil) {
+  if (default_active_command_buffer_ == nil) {
     return;
   }
-  [default_active_encoder_ endEncoding];
-  default_active_encoder_ = nil;
-  default_active_pipeline_ = nil;
-  default_active_dispatches_ = 0;
+  EndActiveEncodersLocked(nullptr);
+  default_active_dispatches_count_ = 0;
+  default_active_dispatches_.store(0, std::memory_order_relaxed);
   CommitStreamCommandBufferLocked(nullptr, default_active_command_buffer_);
   default_active_command_buffer_ = nil;
 }
@@ -268,6 +323,7 @@ cudaError_t StreamManager::ConsumeAsyncError() noexcept {
 
 void StreamManager::Reset() noexcept {
   std::vector<std::shared_ptr<StreamState>> old_streams = streams_.DrainAll();
+  active_stream_count_.store(0, std::memory_order_release);
   {
     std::lock_guard<std::mutex> def_lock(default_stream_mutex_);
     FlushDefaultStreamLocked();

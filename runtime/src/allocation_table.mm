@@ -55,6 +55,18 @@ std::optional<AllocationRecord> AllocationTable::Remove(DeviceAddress base_addre
   return removed;
 }
 
+const AllocationRecord* AllocationTable::FindContainingMruOnly(
+    DeviceAddress address) const noexcept {
+  const std::uint64_t cur_epoch = epoch_.load(std::memory_order_acquire);
+  for (const MruEntry& entry : tl_mru) {
+    if (entry.epoch == cur_epoch && entry.record != nullptr && address.value >= entry.base.value &&
+        (address.value - entry.base.value) < entry.capacity) {
+      return entry.record;
+    }
+  }
+  return nullptr;
+}
+
 const AllocationRecord* AllocationTable::FindContaining(DeviceAddress address) const noexcept {
   const std::uint64_t cur_epoch = epoch_.load(std::memory_order_acquire);
   for (const MruEntry& entry : tl_mru) {

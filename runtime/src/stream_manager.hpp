@@ -43,7 +43,16 @@ class StreamManager {
 
   void FlushStreamLocked(StreamState* stream) noexcept;
   void FlushDefaultStreamLocked() noexcept;
+  void EndActiveEncodersLocked(StreamState* stream) noexcept;
+  void CommitStreamCommandBufferLocked(StreamState* stream_state,
+                                       id<MTLCommandBuffer> command_buffer) noexcept;
   void CommitStreamCommandBuffer(StreamState* stream, id<MTLCommandBuffer> command_buffer) noexcept;
+
+  [[nodiscard]] bool HasPendingWork() const noexcept {
+    return default_pending_commands_.load(std::memory_order_acquire) > 0 ||
+           default_active_dispatches_.load(std::memory_order_relaxed) > 0 ||
+           active_stream_count_.load(std::memory_order_acquire) > 0;
+  }
 
   void RecordAsyncError(cudaError_t error) noexcept;
   [[nodiscard]] cudaError_t ConsumeAsyncError() noexcept;
@@ -55,25 +64,33 @@ class StreamManager {
   __strong id<MTLComputeCommandEncoder>& DefaultActiveEncoder() noexcept {
     return default_active_encoder_;
   }
+  __strong id<MTLBlitCommandEncoder>& DefaultActiveBlitEncoder() noexcept {
+    return default_active_blit_encoder_;
+  }
   __strong id<MTLComputePipelineState>& DefaultActivePipeline() noexcept {
     return default_active_pipeline_;
   }
-  std::size_t& DefaultActiveDispatches() noexcept { return default_active_dispatches_; }
+  std::size_t& DefaultActiveDispatches() noexcept { return default_active_dispatches_count_; }
+  EncoderHazardState& DefaultEncoderState() noexcept { return default_encoder_state_; }
+  void SetDefaultActiveDispatchesAtomic(std::size_t val) noexcept {
+    default_active_dispatches_.store(val, std::memory_order_relaxed);
+  }
 
   void Reset() noexcept;
 
  private:
-  void CommitStreamCommandBufferLocked(StreamState* stream_state,
-                                       id<MTLCommandBuffer> command_buffer) noexcept;
-
   HandleTable<StreamState, HandleKind::kStream> streams_;
+  std::atomic<std::size_t> active_stream_count_{0};
   std::atomic<std::uint64_t> default_pending_commands_{0};
+  std::atomic<std::size_t> default_active_dispatches_{0};
   std::atomic<cudaError_t> async_error_{cudaSuccess};
   id<MTLCommandBuffer> default_last_command_buffer_ = nil;
   id<MTLCommandBuffer> default_active_command_buffer_ = nil;
   id<MTLComputeCommandEncoder> default_active_encoder_ = nil;
+  id<MTLBlitCommandEncoder> default_active_blit_encoder_ = nil;
   id<MTLComputePipelineState> default_active_pipeline_ = nil;
-  std::size_t default_active_dispatches_ = 0;
+  std::size_t default_active_dispatches_count_ = 0;
+  EncoderHazardState default_encoder_state_{};
   std::mutex default_stream_mutex_;
 };
 

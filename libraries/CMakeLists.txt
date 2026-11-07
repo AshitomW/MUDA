@@ -244,8 +244,37 @@ target_link_libraries(
 )
 set_target_properties(cusparse PROPERTIES OUTPUT_NAME "cusparse")
 
+# -----------------------------------------------------------------------------
+# NVRTC Shim (libnvrtc.dylib)
+# -----------------------------------------------------------------------------
+add_library(
+  nvrtc SHARED
+  nvrtc/src/nvrtc.cpp
+)
+add_library(muda::nvrtc ALIAS nvrtc)
+
+target_include_directories(
+  nvrtc
+  PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/nvrtc/include>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+  PRIVATE
+    "${PROJECT_SOURCE_DIR}/runtime/src"
+)
+
+target_compile_features(nvrtc PUBLIC cxx_std_20)
+target_link_libraries(
+  nvrtc
+  PUBLIC
+    cuda
+  PRIVATE
+    muda::compiler
+    muda_warnings
+)
+set_target_properties(nvrtc PROPERTIES OUTPUT_NAME "nvrtc")
+
 install(
-  TARGETS cublas cufft cudnn cusparse
+  TARGETS cublas cufft cudnn cusparse nvrtc
   ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
   LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )
@@ -253,3 +282,4 @@ install(DIRECTORY blas/include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 install(DIRECTORY fft/include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 install(DIRECTORY dnn/include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 install(DIRECTORY sparse/include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(DIRECTORY nvrtc/include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})

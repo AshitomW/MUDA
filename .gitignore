@@ -14,5 +14,9 @@ compile_commands.json
 .vscode/
 .idea/
 *.swp
+__pycache__/
+*.pyc
+*.egg-info/
+uv.lock
 
 Agents.md

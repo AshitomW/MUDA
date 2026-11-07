@@ -82,6 +82,7 @@ enum class OutputKind : std::uint8_t {
   kMetallib,
   kMslSource,
   kObject,
+  kSharedLibrary,
   kExecutable,
 };
 

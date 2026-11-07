@@ -3,8 +3,6 @@
  * @brief Implementation of cuFFT C2C, R2C, and C2R execution pipelines on Apple Silicon GPUs.
  */
 
-#include "cufft_plan.hpp"
-
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 
@@ -12,6 +10,7 @@
 #include <string_view>
 #include <utility>
 
+#include "cufft_plan.hpp"
 #include "muda/libraries/metal_executor.hpp"
 
 namespace muda::libraries::fft {
@@ -19,8 +18,8 @@ namespace {
 
 [[nodiscard]] id<MTLComputePipelineState> GetCufftPipeline(
     std::string_view function_name) noexcept {
-  return LibraryExecutor::Instance().GetOrLoadPipeline(
-      MUDA_CUFFT_METALLIB_PATH, MUDA_CUFFT_METAL_SOURCE_PATH, function_name);
+  return LibraryExecutor::Instance().GetOrLoadPipeline(MUDA_CUFFT_METALLIB_PATH,
+                                                       MUDA_CUFFT_METAL_SOURCE_PATH, function_name);
 }
 
 [[nodiscard]] constexpr bool IsPowerOfTwo(std::uint32_t x) noexcept {
@@ -37,18 +36,34 @@ namespace {
 
   auto& exec = LibraryExecutor::Instance();
   if (IsPowerOfTwo(axis_len)) {
+    if (inner_stride == 1u && axis_len <= 1024u) {
+      id<MTLComputePipelineState> shared_pipe = GetCufftPipeline("muda_cufft_c2c_1d_shared");
+      if (shared_pipe != nil) {
+        const std::uint32_t outer_batches = total_elements / axis_len;
+        const std::size_t block_x = (axis_len < 256u) ? axis_len : 256u;
+        const std::array<ShaderArg, 4> args = {
+            ShaderArg::RawBuffer(*io_current, 0),
+            ShaderArg::RawBuffer(*io_scratch, 0),
+            ShaderArg::Value(axis_len),
+            ShaderArg::Value(sign_dir),
+        };
+        if (exec.DispatchThreadgroups(shared_pipe, MTLSizeMake(outer_batches, 1, 1),
+                                      MTLSizeMake(block_x, 1, 1), args, 0, stream) == cudaSuccess) {
+          std::swap(*io_current, *io_scratch);
+          return CUFFT_SUCCESS;
+        }
+      }
+    }
+
     id<MTLComputePipelineState> stage_pipe = GetCufftPipeline("muda_cufft_stockham_stage");
     if (stage_pipe == nil) {
       return CUFFT_INTERNAL_ERROR;
     }
     for (std::uint32_t half_m = 1u; half_m < axis_len; half_m <<= 1u) {
       const std::array<ShaderArg, 7> args = {
-          ShaderArg::RawBuffer(*io_current, 0),
-          ShaderArg::RawBuffer(*io_scratch, 0),
-          ShaderArg::Value(total_elements),
-          ShaderArg::Value(axis_len),
-          ShaderArg::Value(inner_stride),
-          ShaderArg::Value(half_m),
+          ShaderArg::RawBuffer(*io_current, 0), ShaderArg::RawBuffer(*io_scratch, 0),
+          ShaderArg::Value(total_elements),     ShaderArg::Value(axis_len),
+          ShaderArg::Value(inner_stride),       ShaderArg::Value(half_m),
           ShaderArg::Value(sign_dir),
       };
       if (exec.DispatchThreads1D(stage_pipe, total_elements, 256, args, 0, stream) != cudaSuccess) {
@@ -131,25 +146,47 @@ cufftResult cufftExecC2C(cufftHandle plan, cufftComplex* idata, cufftComplex* od
     return CUFFT_INVALID_VALUE;
   }
 
+  const float sign_dir = (direction == CUFFT_FORWARD) ? -1.0f : 1.0f;
+  const auto u_istride = static_cast<std::uint32_t>(cfg.istride);
+  const auto u_idist = static_cast<std::uint32_t>(cfg.idist);
+  const auto u_ostride = static_cast<std::uint32_t>(cfg.ostride);
+  const auto u_odist = static_cast<std::uint32_t>(cfg.odist);
+
+  // Fast Path: 1D contiguous power-of-two C2C FFT (<= 1024) directly from buf_in to buf_out
+  if (cfg.rank == 1 && u_istride == 1u && u_idist == elem_per_batch && u_ostride == 1u &&
+      u_odist == elem_per_batch && IsPowerOfTwo(elem_per_batch) && elem_per_batch <= 1024u) {
+    id<MTLComputePipelineState> shared_pipe = GetCufftPipeline("muda_cufft_c2c_1d_shared");
+    if (shared_pipe != nil) {
+      const std::size_t block_x = (elem_per_batch < 256u) ? elem_per_batch : 256u;
+      const std::array<ShaderArg, 4> direct_args = {
+          ShaderArg::Buffer(buf_in),
+          ShaderArg::Buffer(buf_out),
+          ShaderArg::Value(elem_per_batch),
+          ShaderArg::Value(sign_dir),
+      };
+      return (exec.DispatchThreadgroups(shared_pipe, MTLSizeMake(batch_u, 1, 1),
+                                        MTLSizeMake(block_x, 1, 1), direct_args, 0,
+                                        stream) == cudaSuccess)
+                 ? CUFFT_SUCCESS
+                 : CUFFT_EXEC_FAILED;
+    }
+  }
+
   id<MTLComputePipelineState> gather_pipe = GetCufftPipeline("muda_cufft_gather_c2c");
   id<MTLComputePipelineState> scatter_pipe = GetCufftPipeline("muda_cufft_scatter_c2c");
   if (gather_pipe == nil || scatter_pipe == nil) {
     return CUFFT_INTERNAL_ERROR;
   }
 
-  const auto u_istride = static_cast<std::uint32_t>(cfg.istride);
-  const auto u_idist = static_cast<std::uint32_t>(cfg.idist);
   const std::array<ShaderArg, 6> gather_args = {
-      ShaderArg::Buffer(buf_in),        ShaderArg::RawBuffer(cur_buf, 0),
-      ShaderArg::Value(elem_per_batch), ShaderArg::Value(batch_u),
-      ShaderArg::Value(u_istride),      ShaderArg::Value(u_idist),
+      ShaderArg::Buffer(buf_in), ShaderArg::RawBuffer(cur_buf, 0), ShaderArg::Value(elem_per_batch),
+      ShaderArg::Value(batch_u), ShaderArg::Value(u_istride),      ShaderArg::Value(u_idist),
   };
   if (exec.DispatchThreads1D(gather_pipe, total_elems, 256, gather_args, 0, stream) !=
       cudaSuccess) {
     return CUFFT_EXEC_FAILED;
   }
 
-  const float sign_dir = (direction == CUFFT_FORWARD) ? -1.0f : 1.0f;
   std::uint32_t inner_stride = 1u;
   for (int axis = cfg.rank - 1; axis >= 0; --axis) {
     const auto axis_len = static_cast<std::uint32_t>(cfg.dims[static_cast<std::size_t>(axis)]);
@@ -161,8 +198,6 @@ cufftResult cufftExecC2C(cufftHandle plan, cufftComplex* idata, cufftComplex* od
     inner_stride *= axis_len;
   }
 
-  const auto u_ostride = static_cast<std::uint32_t>(cfg.ostride);
-  const auto u_odist = static_cast<std::uint32_t>(cfg.odist);
   const std::array<ShaderArg, 6> scatter_args = {
       ShaderArg::RawBuffer(cur_buf, 0), ShaderArg::Buffer(buf_out),
       ShaderArg::Value(elem_per_batch), ShaderArg::Value(batch_u),
@@ -227,18 +262,40 @@ cufftResult cufftExecR2C(cufftHandle plan, cufftReal* idata, cufftComplex* odata
     return CUFFT_INVALID_VALUE;
   }
 
+  const auto u_istride = static_cast<std::uint32_t>(cfg.istride);
+  const auto u_idist = static_cast<std::uint32_t>(cfg.idist);
+  const auto u_ostride = static_cast<std::uint32_t>(cfg.ostride);
+  const auto u_odist = static_cast<std::uint32_t>(cfg.odist);
+
+  // Fast Path: 1D contiguous power-of-two R2C FFT (<= 1024) directly from buf_in to buf_out
+  if (cfg.rank == 1 && u_istride == 1u && u_idist == elem_per_batch && u_ostride == 1u &&
+      u_odist == herm_dim && IsPowerOfTwo(elem_per_batch) && elem_per_batch <= 1024u) {
+    id<MTLComputePipelineState> r2c_shared_pipe = GetCufftPipeline("muda_cufft_r2c_1d_shared");
+    if (r2c_shared_pipe != nil) {
+      const std::size_t block_x = (elem_per_batch < 256u) ? elem_per_batch : 256u;
+      const std::array<ShaderArg, 4> direct_args = {
+          ShaderArg::Buffer(buf_in),
+          ShaderArg::Buffer(buf_out),
+          ShaderArg::Value(elem_per_batch),
+          ShaderArg::Value(herm_dim),
+      };
+      return (exec.DispatchThreadgroups(r2c_shared_pipe, MTLSizeMake(batch_u, 1, 1),
+                                        MTLSizeMake(block_x, 1, 1), direct_args, 0,
+                                        stream) == cudaSuccess)
+                 ? CUFFT_SUCCESS
+                 : CUFFT_EXEC_FAILED;
+    }
+  }
+
   id<MTLComputePipelineState> gather_pipe = GetCufftPipeline("muda_cufft_gather_r2c");
   id<MTLComputePipelineState> scatter_pipe = GetCufftPipeline("muda_cufft_scatter_r2c_hermitian");
   if (gather_pipe == nil || scatter_pipe == nil) {
     return CUFFT_INTERNAL_ERROR;
   }
 
-  const auto u_istride = static_cast<std::uint32_t>(cfg.istride);
-  const auto u_idist = static_cast<std::uint32_t>(cfg.idist);
   const std::array<ShaderArg, 6> gather_args = {
-      ShaderArg::Buffer(buf_in),        ShaderArg::RawBuffer(cur_buf, 0),
-      ShaderArg::Value(elem_per_batch), ShaderArg::Value(batch_u),
-      ShaderArg::Value(u_istride),      ShaderArg::Value(u_idist),
+      ShaderArg::Buffer(buf_in), ShaderArg::RawBuffer(cur_buf, 0), ShaderArg::Value(elem_per_batch),
+      ShaderArg::Value(batch_u), ShaderArg::Value(u_istride),      ShaderArg::Value(u_idist),
   };
   if (exec.DispatchThreads1D(gather_pipe, total_elems, 256, gather_args, 0, stream) !=
       cudaSuccess) {
@@ -256,12 +313,9 @@ cufftResult cufftExecR2C(cufftHandle plan, cufftReal* idata, cufftComplex* odata
     inner_stride *= axis_len;
   }
 
-  const auto u_ostride = static_cast<std::uint32_t>(cfg.ostride);
-  const auto u_odist = static_cast<std::uint32_t>(cfg.odist);
   const std::array<ShaderArg, 8> scatter_args = {
-      ShaderArg::RawBuffer(cur_buf, 0), ShaderArg::Buffer(buf_out),
-      ShaderArg::Value(prefix_count),   ShaderArg::Value(last_dim),
-      ShaderArg::Value(herm_dim),       ShaderArg::Value(batch_u),
+      ShaderArg::RawBuffer(cur_buf, 0), ShaderArg::Buffer(buf_out), ShaderArg::Value(prefix_count),
+      ShaderArg::Value(last_dim),       ShaderArg::Value(herm_dim), ShaderArg::Value(batch_u),
       ShaderArg::Value(u_ostride),      ShaderArg::Value(u_odist),
   };
   if (exec.DispatchThreads1D(scatter_pipe, total_herm, 256, scatter_args, 0, stream) !=
@@ -334,9 +388,8 @@ cufftResult cufftExecC2R(cufftHandle plan, cufftComplex* idata, cufftReal* odata
   const auto u_istride = static_cast<std::uint32_t>(cfg.istride);
   const auto u_idist = static_cast<std::uint32_t>(cfg.idist);
   const std::array<ShaderArg, 6> gather_args = {
-      ShaderArg::Buffer(buf_in),        ShaderArg::RawBuffer(cur_buf, 0),
-      ShaderArg::Value(herm_per_batch), ShaderArg::Value(batch_u),
-      ShaderArg::Value(u_istride),      ShaderArg::Value(u_idist),
+      ShaderArg::Buffer(buf_in), ShaderArg::RawBuffer(cur_buf, 0), ShaderArg::Value(herm_per_batch),
+      ShaderArg::Value(batch_u), ShaderArg::Value(u_istride),      ShaderArg::Value(u_idist),
   };
   if (exec.DispatchThreads1D(gather_pipe, total_herm, 256, gather_args, 0, stream) != cudaSuccess) {
     return CUFFT_EXEC_FAILED;

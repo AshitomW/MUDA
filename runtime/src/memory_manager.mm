@@ -173,6 +173,52 @@ bool MemoryManager::ResolveBuffer(DeviceAddress addr, id<MTLBuffer> __strong* ou
   return true;
 }
 
+bool MemoryManager::ResolveBufferFast(DeviceAddress addr,
+                                      __unsafe_unretained id<MTLBuffer>* out_buffer,
+                                      std::size_t* out_offset) const noexcept {
+  // Fast lock-free path if AllocationTable's thread-local MRU cache matches current epoch
+  const AllocationRecord* mru_rec = allocations_.FindContainingMruOnly(addr);
+  if (mru_rec != nullptr) {
+    if ((addr.value - mru_rec->base_address.value) >= mru_rec->size) {
+      return false;
+    }
+    *out_buffer = mru_rec->buffer;
+    *out_offset = static_cast<std::size_t>(addr.value - mru_rec->base_address.value);
+    return true;
+  }
+
+  std::shared_lock<std::shared_mutex> lock(mutex_);
+  const AllocationRecord* record = allocations_.FindContaining(addr);
+  if (record == nullptr || (addr.value - record->base_address.value) >= record->size) {
+    return false;
+  }
+  *out_buffer = record->buffer;
+  *out_offset = static_cast<std::size_t>(addr.value - record->base_address.value);
+  return true;
+}
+
+void MemoryManager::ResolveEndpointsPair(DeviceAddress dst_addr, DeviceAddress src_addr,
+                                         LightweightEndpoint* out_dst,
+                                         LightweightEndpoint* out_src) const noexcept {
+  const auto fill = [](const AllocationRecord* rec, DeviceAddress addr, LightweightEndpoint* out) {
+    if (rec != nullptr) {
+      out->buffer = rec->buffer;
+      out->base_address = rec->base_address;
+      out->size = rec->size;
+      out->offset = static_cast<std::size_t>(addr.value - rec->base_address.value);
+      out->memory_type = rec->memory_type;
+      out->found = true;
+    } else {
+      out->buffer = nil;
+      out->found = false;
+    }
+  };
+
+  std::shared_lock<std::shared_mutex> lock(mutex_);
+  fill(allocations_.FindContaining(dst_addr), dst_addr, out_dst);
+  fill(allocations_.FindContaining(src_addr), src_addr, out_src);
+}
+
 bool MemoryManager::ResolveEndpoint(DeviceAddress addr,
                                     ResolvedEndpoint* out_endpoint) const noexcept {
   if (out_endpoint == nullptr) {

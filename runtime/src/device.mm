@@ -24,8 +24,11 @@ DeviceInfo MakeInfo(id<MTLDevice> device) {
   info.backend = BackendKind::kMetal;
   info.recommended_working_set_bytes =
       static_cast<std::uint64_t>(device.recommendedMaxWorkingSetSize);
+  info.max_buffer_length = static_cast<std::uint64_t>(device.maxBufferLength);
   info.max_threads_per_threadgroup =
       static_cast<std::uint32_t>(device.maxThreadsPerThreadgroup.width);
+  info.max_threadgroup_memory_bytes = static_cast<std::uint32_t>(device.maxThreadgroupMemoryLength);
+  info.unified_memory = static_cast<bool>(device.hasUnifiedMemory);
   return info;
 }
 

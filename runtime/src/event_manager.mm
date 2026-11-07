@@ -78,17 +78,30 @@ cudaError_t EventManager::EventRecord(cudaEvent_t event_handle, cudaStream_t str
   }
 
   @autoreleasepool {
-    if (stream_state != nullptr) {
-      std::lock_guard<std::mutex> stream_lock(stream_state->mutex);
-      streams.FlushStreamLocked(stream_state.get());
-    } else {
-      std::lock_guard<std::mutex> def_lock(streams.DefaultStreamMutex());
-      streams.FlushDefaultStreamLocked();
-    }
+    std::unique_lock<std::mutex> stream_lock =
+        (stream_state != nullptr) ? std::unique_lock<std::mutex>(stream_state->mutex)
+                                  : std::unique_lock<std::mutex>(streams.DefaultStreamMutex());
 
-    id<MTLCommandBuffer> command_buffer = [target_queue commandBuffer];
-    if (command_buffer == nil) {
-      return RecordError(cudaErrorLaunchFailure);
+    __strong id<MTLCommandBuffer>& active_cmd = (stream_state != nullptr)
+                                                    ? stream_state->active_command_buffer
+                                                    : streams.DefaultActiveCommandBuffer();
+
+    id<MTLCommandBuffer> command_buffer = nil;
+    if (active_cmd != nil) {
+      streams.EndActiveEncodersLocked(stream_state.get());
+      if (stream_state != nullptr) {
+        stream_state->active_dispatches = 0;
+      } else {
+        streams.DefaultActiveDispatches() = 0;
+        streams.SetDefaultActiveDispatchesAtomic(0);
+      }
+      command_buffer = active_cmd;
+      active_cmd = nil;
+    } else {
+      command_buffer = [target_queue commandBufferWithUnretainedReferences];
+      if (command_buffer == nil) {
+        return RecordError(cudaErrorLaunchFailure);
+      }
     }
 
     std::uint64_t next_ticket = 0;
@@ -97,6 +110,7 @@ cudaError_t EventManager::EventRecord(cudaEvent_t event_handle, cudaStream_t str
       next_ticket = ++event->recorded_ticket;
       event->recorded_command_buffer = command_buffer;
       event->recorded.store(true, std::memory_order_release);
+      event->completion_timestamp_seconds.store(0.0, std::memory_order_release);
     }
 
     [command_buffer encodeSignalEvent:event->shared_event value:next_ticket];
@@ -108,7 +122,7 @@ cudaError_t EventManager::EventRecord(cudaEvent_t event_handle, cudaStream_t str
         locked_event->completion_timestamp_seconds.store(stamp, std::memory_order_release);
       }
     }];
-    streams.CommitStreamCommandBuffer(stream_state.get(), command_buffer);
+    streams.CommitStreamCommandBufferLocked(stream_state.get(), command_buffer);
     return cudaSuccess;
   }
 }
@@ -225,20 +239,26 @@ cudaError_t EventManager::StreamWaitEvent(cudaStream_t stream_handle, cudaEvent_
   }
 
   @autoreleasepool {
-    if (stream_state != nullptr) {
-      std::lock_guard<std::mutex> stream_lock(stream_state->mutex);
+    std::unique_lock<std::mutex> stream_lock =
+        (stream_state != nullptr) ? std::unique_lock<std::mutex>(stream_state->mutex)
+                                  : std::unique_lock<std::mutex>(streams.DefaultStreamMutex());
+
+    __strong id<MTLCommandBuffer>& active_cmd = (stream_state != nullptr)
+                                                    ? stream_state->active_command_buffer
+                                                    : streams.DefaultActiveCommandBuffer();
+    if (active_cmd != nil) {
       streams.FlushStreamLocked(stream_state.get());
-    } else {
-      std::lock_guard<std::mutex> def_lock(streams.DefaultStreamMutex());
-      streams.FlushDefaultStreamLocked();
+      if (stream_state == nullptr) {
+        streams.FlushDefaultStreamLocked();
+      }
     }
 
-    id<MTLCommandBuffer> command_buffer = [target_queue commandBuffer];
+    id<MTLCommandBuffer> command_buffer = [target_queue commandBufferWithUnretainedReferences];
     if (command_buffer == nil) {
       return RecordError(cudaErrorLaunchFailure);
     }
     [command_buffer encodeWaitForEvent:event->shared_event value:ticket];
-    streams.CommitStreamCommandBuffer(stream_state.get(), command_buffer);
+    streams.CommitStreamCommandBufferLocked(stream_state.get(), command_buffer);
     return cudaSuccess;
   }
 }

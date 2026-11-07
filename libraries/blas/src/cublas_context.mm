@@ -16,7 +16,7 @@ namespace muda::libraries::blas {
 namespace {
 
 constexpr int kCublasVersion = 12000;
-constexpr std::size_t kScratchBufferBytes = 256;
+constexpr std::size_t kScratchBufferBytes = 4096;
 
 }  // namespace
 
