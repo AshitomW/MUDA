@@ -47,6 +47,38 @@ bool ContainsCallTo(std::string_view body, std::string_view fn_name) noexcept {
   return false;
 }
 
+bool ContainsIdentifier(std::string_view body, std::string_view ident) noexcept {
+  for (std::size_t index = 0; index < body.size();) {
+    if (!IsIdentifierStart(body[index])) {
+      ++index;
+      continue;
+    }
+    const std::size_t start = index;
+    ++index;
+    while (index < body.size() && IsIdentifierChar(body[index])) {
+      ++index;
+    }
+    if (body.substr(start, index - start) == ident) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool ModuleUsesSimdgroupMatrix(const Module& module) noexcept {
+  for (const DeviceFunction& fn : module.device_functions) {
+    if (fn.lowered_body.find("simdgroup_") != std::string::npos) {
+      return true;
+    }
+  }
+  for (const KernelFunction& kernel : module.kernels) {
+    if (kernel.lowered_body.find("simdgroup_") != std::string::npos) {
+      return true;
+    }
+  }
+  return false;
+}
+
 void EmitDeviceFunctionMsl(const DeviceFunction& fn, std::string* out) {
   *out += "inline ";
   if (fn.returns_void) {
@@ -90,7 +122,16 @@ void EmitKernelFunctionMsl(const KernelFunction& kernel, std::string* out) {
   *out += emitted_name;
   *out += "(\n";
 
+  bool has_entry = false;
+  const auto append_comma = [&]() {
+    if (has_entry) {
+      *out += ",\n";
+    }
+    has_entry = true;
+  };
+
   for (const KernelParameter& parameter : kernel.parameters) {
+    append_comma();
     *out += "    ";
     *out += AddressSpaceName(parameter.address_space);
     out->push_back(' ');
@@ -107,25 +148,46 @@ void EmitKernelFunctionMsl(const KernelFunction& kernel, std::string* out) {
     *out += parameter.name;
     *out += " [[buffer(";
     *out += std::to_string(parameter.buffer_index);
-    *out += ")]],\n";
+    *out += ")]]";
   }
 
   for (const SharedAllocation& shared : kernel.shared_allocations) {
     if (shared.is_dynamic) {
+      append_comma();
       *out += "    threadgroup ";
       *out += MslTypeName(shared.element_type);
       *out += "* ";
       *out += shared.name;
-      *out += " [[threadgroup(0)]],\n";
+      *out += " [[threadgroup(0)]]";
       break;
     }
   }
 
-  *out += "    uint3 thread_position_in_threadgroup [[thread_position_in_threadgroup]],\n";
-  *out += "    uint3 threadgroup_position_in_grid [[threadgroup_position_in_grid]],\n";
-  *out += "    uint3 threads_per_threadgroup [[threads_per_threadgroup]],\n";
-  *out += "    uint3 threadgroups_per_grid [[threadgroups_per_grid]])\n";
-  *out += "{\n";
+  if (ContainsIdentifier(kernel.lowered_body, "thread_position_in_threadgroup")) {
+    append_comma();
+    *out += "    uint3 thread_position_in_threadgroup [[thread_position_in_threadgroup]]";
+  }
+  if (ContainsIdentifier(kernel.lowered_body, "threadgroup_position_in_grid")) {
+    append_comma();
+    *out += "    uint3 threadgroup_position_in_grid [[threadgroup_position_in_grid]]";
+  }
+  if (ContainsIdentifier(kernel.lowered_body, "threads_per_threadgroup")) {
+    append_comma();
+    *out += "    uint3 threads_per_threadgroup [[threads_per_threadgroup]]";
+  }
+  if (ContainsIdentifier(kernel.lowered_body, "threadgroups_per_grid")) {
+    append_comma();
+    *out += "    uint3 threadgroups_per_grid [[threadgroups_per_grid]]";
+  }
+  if (ContainsIdentifier(kernel.lowered_body, "simd_lane_id")) {
+    append_comma();
+    *out += "    uint simd_lane_id [[thread_index_in_simdgroup]]";
+  }
+  if (ContainsIdentifier(kernel.lowered_body, "simd_group_id")) {
+    append_comma();
+    *out += "    uint simd_group_id [[simdgroup_index_in_threadgroup]]";
+  }
+  *out += ")\n{\n";
 
   for (const SharedAllocation& shared : kernel.shared_allocations) {
     if (!shared.is_dynamic) {
@@ -190,6 +252,9 @@ std::string EmitMslModule(const Module& module) {
   std::string msl;
   msl.reserve(1024);
   msl += "#include <metal_stdlib>\n";
+  if (ModuleUsesSimdgroupMatrix(module)) {
+    msl += "#include <metal_simdgroup_matrix>\n";
+  }
   msl += "using namespace metal;\n\n";
 
   for (const std::string& inc : module.includes) {
@@ -217,6 +282,10 @@ std::string EmitMslKernel(const Module& module, const KernelFunction& kernel) {
   std::string msl;
   msl.reserve(1024);
   msl += "#include <metal_stdlib>\n";
+  if (ModuleUsesSimdgroupMatrix(module) ||
+      kernel.lowered_body.find("simdgroup_") != std::string::npos) {
+    msl += "#include <metal_simdgroup_matrix>\n";
+  }
   msl += "using namespace metal;\n\n";
 
   for (const std::string& inc : module.includes) {

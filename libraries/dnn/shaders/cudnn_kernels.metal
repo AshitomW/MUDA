@@ -5,6 +5,7 @@
  */
 
 #include <metal_stdlib>
+#include <metal_simdgroup_matrix>
 #include "../src/cudnn_kernel_params.h"
 
 using namespace metal;
@@ -58,6 +59,136 @@ kernel void muda_cudnn_conv2d_fwd(
   const int y_idx = b * p.y_ns + oc * p.y_cs + oy * p.y_hs + ox * p.y_ws;
   const float prev_y = (p.beta == 0.0f) ? 0.0f : (p.beta * y[y_idx]);
   y[y_idx] = fma(p.alpha, acc, prev_y);
+}
+
+kernel void muda_cudnn_conv2d_fwd_implicit_gemm(
+    device const float* x [[buffer(0)]],
+    device const float* w [[buffer(1)]],
+    device float* y [[buffer(2)]],
+    constant CudnnConvParams& p [[buffer(3)]],
+    uint3 tgid [[threadgroup_position_in_grid]],
+    uint simd_lane [[thread_index_in_simdgroup]],
+    uint simd_id [[simdgroup_index_in_threadgroup]]) {
+  const uint M = uint(p.c_out);
+  const uint hw_out = uint(p.h_out) * uint(p.w_out);
+  const uint N = uint(p.n) * hw_out;
+  const uint kw_u = uint(p.kw);
+  const uint kh_kw = uint(p.kh) * kw_u;
+  const uint K = uint(p.c_in) * kh_kw;
+
+  const uint base_m = tgid.y * 32u;
+  const uint base_n = tgid.x * 32u;
+  if (base_m >= M || base_n >= N) return;
+
+  const uint sg_rm = (simd_id >> 1u) * 16u;
+  const uint sg_cn = (simd_id & 1u) * 16u;
+  const uint tid = simd_id * 32u + simd_lane;
+
+  threadgroup float s_w[512];  // 32 (M = c_out) x 16 (K)
+  threadgroup float s_x[512];  // 16 (K) x 32 (N = batch * h_out * w_out)
+  threadgroup int4 s_k_info[16];
+
+  const uint cn = tid & 31u;
+  const uint gn = base_n + cn;
+  const bool valid_gn = (gn < N);
+  int b_offset = 0;
+  int oy_base = 0;
+  int ox_base = 0;
+  if (valid_gn) {
+    const uint b = gn / hw_out;
+    const uint rem_n = gn % hw_out;
+    const int oy = int(rem_n / uint(p.w_out));
+    const int ox = int(rem_n % uint(p.w_out));
+    b_offset = int(b) * p.x_ns;
+    oy_base = oy * p.stride_h - p.pad_h;
+    ox_base = ox * p.stride_w - p.pad_w;
+  }
+
+  simdgroup_float8x8 acc00 = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+  simdgroup_float8x8 acc01 = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+  simdgroup_float8x8 acc10 = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+  simdgroup_float8x8 acc11 = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+
+  for (uint k_base = 0; k_base < K; k_base += 16u) {
+    if (tid < 16u) {
+      const uint x_gk = k_base + tid;
+      if (x_gk < K) {
+        const uint ic = x_gk / kh_kw;
+        const uint rem_k = x_gk % kh_kw;
+        const int fr = int(rem_k / kw_u);
+        const int fs = int(rem_k % kw_u);
+        const int r = (p.conv_mode == 0) ? (p.kh - 1 - fr) : fr;
+        const int s = (p.conv_mode == 0) ? (p.kw - 1 - fs) : fs;
+        s_k_info[tid] = int4(int(ic) * p.x_cs, r * p.dil_h, s * p.dil_w, 1);
+      } else {
+        s_k_info[tid] = int4(0, 0, 0, 0);
+      }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    for (uint idx = tid; idx < 512u; idx += 128u) {
+      const uint rm = idx >> 4u;
+      const uint ck = idx & 15u;
+      const uint gm = base_m + rm;
+      const uint gk = k_base + ck;
+      s_w[rm * 16u + ck] = (gm < M && gk < K) ? w[gm * K + gk] : 0.0f;
+
+      const uint rk = idx >> 5u;
+      const int4 ki = s_k_info[rk];
+      float x_val = 0.0f;
+      if (valid_gn && ki.w != 0) {
+        const int iy = oy_base + ki.y;
+        const int ix = ox_base + ki.z;
+        if (uint(iy) < uint(p.h_in) && uint(ix) < uint(p.w_in)) {
+          x_val = x[b_offset + ki.x + iy * p.x_hs + ix * p.x_ws];
+        }
+      }
+      s_x[rk * 32u + cn] = x_val;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    for (uint ks = 0; ks < 16u; ks += 8u) {
+      simdgroup_float8x8 fw0;
+      simdgroup_float8x8 fw1;
+      simdgroup_float8x8 fx0;
+      simdgroup_float8x8 fx1;
+      simdgroup_load(fw0, s_w + (sg_rm + 0u) * 16u + ks, 16u);
+      simdgroup_load(fw1, s_w + (sg_rm + 8u) * 16u + ks, 16u);
+      simdgroup_load(fx0, s_x + ks * 32u + sg_cn + 0u, 32u);
+      simdgroup_load(fx1, s_x + ks * 32u + sg_cn + 8u, 32u);
+
+      simdgroup_multiply_accumulate(acc00, fw0, fx0, acc00);
+      simdgroup_multiply_accumulate(acc01, fw0, fx1, acc01);
+      simdgroup_multiply_accumulate(acc10, fw1, fx0, acc10);
+      simdgroup_multiply_accumulate(acc11, fw1, fx1, acc11);
+    }
+
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
+
+  threadgroup float* sg_scratch = (simd_id < 2u) ? (s_w + simd_id * 256u)
+                                                 : (s_x + (simd_id - 2u) * 256u);
+  simdgroup_store(acc00, sg_scratch + 0u, 16u);
+  simdgroup_store(acc01, sg_scratch + 8u, 16u);
+  simdgroup_store(acc10, sg_scratch + 128u, 16u);
+  simdgroup_store(acc11, sg_scratch + 136u, 16u);
+  simdgroup_barrier(mem_flags::mem_threadgroup);
+
+  for (uint idx = simd_lane; idx < 256u; idx += 32u) {
+    const uint rm = idx >> 4u;
+    const uint cn = idx & 15u;
+    const uint gm = base_m + sg_rm + rm;
+    const uint gn = base_n + sg_cn + cn;
+    if (gm < M && gn < N) {
+      const uint b = gn / hw_out;
+      const uint rem_n = gn % hw_out;
+      const int oy = int(rem_n / uint(p.w_out));
+      const int ox = int(rem_n % uint(p.w_out));
+      const int y_idx = int(b) * p.y_ns + int(gm) * p.y_cs + oy * p.y_hs + ox * p.y_ws;
+      const float prev_y = (p.beta == 0.0f) ? 0.0f : (p.beta * y[y_idx]);
+      y[y_idx] = fma(p.alpha, sg_scratch[rm * 16u + cn], prev_y);
+    }
+  }
 }
 
 kernel void muda_cudnn_conv2d_bwd_data(
@@ -235,6 +366,38 @@ kernel void muda_cudnn_activation_fwd(
   y[y_idx] = fma(p.alpha, act, prev_y);
 }
 
+inline float4 apply_activation_vec4(float4 val, int mode, float coef) {
+  if (mode == 0) {
+    return 1.0f / (1.0f + exp(-val));
+  } else if (mode == 1) {
+    return max(val, float4(0.0f));
+  } else if (mode == 2) {
+    return tanh(val);
+  } else if (mode == 3) {
+    return clamp(val, float4(0.0f), float4(coef));
+  } else if (mode == 4) {
+    return select(coef * (exp(val) - 1.0f), val, val >= float4(0.0f));
+  } else if (mode == 6) {
+    return val / (1.0f + exp(-val));
+  }
+  return val;
+}
+
+kernel void muda_cudnn_activation_fwd_vec4(
+    device const float4* x [[buffer(0)]],
+    device float4* y [[buffer(1)]],
+    constant uint& n_vec4 [[buffer(2)]],
+    constant int& mode [[buffer(3)]],
+    constant float& alpha [[buffer(4)]],
+    constant float& beta [[buffer(5)]],
+    constant float& coef [[buffer(6)]],
+    uint tid [[thread_position_in_grid]]) {
+  if (tid >= n_vec4) return;
+  const float4 act = apply_activation_vec4(x[tid], mode, coef);
+  const float4 prev_y = (beta == 0.0f) ? float4(0.0f) : (beta * y[tid]);
+  y[tid] = fma(float4(alpha), act, prev_y);
+}
+
 kernel void muda_cudnn_pooling2d_fwd(
     device const float* x [[buffer(0)]],
     device float* y [[buffer(1)]],
@@ -363,6 +526,47 @@ kernel void muda_cudnn_softmax_fwd(
   }
 }
 
+kernel void muda_cudnn_softmax_warp_contiguous(
+    device const float* x [[buffer(0)]],
+    device float* y [[buffer(1)]],
+    constant uint& num_slices [[buffer(2)]],
+    constant uint& slice_len [[buffer(3)]],
+    constant int& algo [[buffer(4)]],
+    constant float& alpha [[buffer(5)]],
+    constant float& beta [[buffer(6)]],
+    uint tgid [[threadgroup_position_in_grid]],
+    uint simd_lane [[thread_index_in_simdgroup]],
+    uint simd_id [[simdgroup_index_in_threadgroup]]) {
+  const uint slice = tgid * 8u + simd_id;
+  if (slice >= num_slices) return;
+
+  const uint base = slice * slice_len;
+  float max_v = 0.0f;
+  if (algo != 0) {
+    float local_max = -INFINITY;
+    for (uint i = simd_lane; i < slice_len; i += 32u) {
+      local_max = max(local_max, x[base + i]);
+    }
+    max_v = simd_max(local_max);
+  }
+
+  float local_sum = 0.0f;
+  for (uint i = simd_lane; i < slice_len; i += 32u) {
+    local_sum += exp(x[base + i] - max_v);
+  }
+  const float sum_exp = simd_sum(local_sum);
+  const float log_sum = log(sum_exp);
+  const float inv_sum = 1.0f / sum_exp;
+
+  for (uint i = simd_lane; i < slice_len; i += 32u) {
+    const uint idx = base + i;
+    const float shifted = x[idx] - max_v;
+    const float val = (algo == 2) ? (shifted - log_sum) : (exp(shifted) * inv_sum);
+    const float prev_y = (beta == 0.0f) ? 0.0f : (beta * y[idx]);
+    y[idx] = fma(alpha, val, prev_y);
+  }
+}
+
 kernel void muda_cudnn_batchnorm_fwd_inference(
     device const float* x [[buffer(0)]],
     device float* y [[buffer(1)]],
@@ -374,6 +578,20 @@ kernel void muda_cudnn_batchnorm_fwd_inference(
     uint tid [[thread_position_in_grid]]) {
   const uint total = uint(p.n) * uint(p.c) * uint(p.h) * uint(p.w);
   if (tid >= total) return;
+
+  const uint hw = uint(p.h) * uint(p.w);
+  if (p.x_ws == 1 && p.y_ws == 1 && uint(p.x_hs) == uint(p.w) && uint(p.y_hs) == uint(p.w) &&
+      uint(p.x_cs) == hw && uint(p.y_cs) == hw && uint(p.x_ns) == uint(p.c) * hw &&
+      uint(p.y_ns) == uint(p.c) * hw) {
+    const uint chw = uint(p.c) * hw;
+    const uint rem_n = tid % chw;
+    const uint param_idx = (p.mode == 0) ? rem_n : (rem_n / hw);
+    const float inv_std = rsqrt(var[param_idx] + p.coef);
+    const float norm_val = fma((x[tid] - mean[param_idx]) * inv_std, scale[param_idx], bias[param_idx]);
+    const float prev_y = (p.beta == 0.0f) ? 0.0f : (p.beta * y[tid]);
+    y[tid] = fma(p.alpha, norm_val, prev_y);
+    return;
+  }
 
   const int iw = int(tid % uint(p.w));
   uint rem = tid / uint(p.w);

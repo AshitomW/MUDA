@@ -4,14 +4,13 @@
  *        Softmax, BatchNorm, AddTensor) on Apple Silicon GPUs.
  */
 
-#include "cudnn_descriptors.hpp"
-
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 
 #include <array>
 #include <string_view>
 
+#include "cudnn_descriptors.hpp"
 #include "cudnn_kernel_params.h"
 #include "muda/libraries/metal_executor.hpp"
 
@@ -20,8 +19,8 @@ namespace {
 
 [[nodiscard]] id<MTLComputePipelineState> GetCudnnPipeline(
     std::string_view function_name) noexcept {
-  return LibraryExecutor::Instance().GetOrLoadPipeline(
-      MUDA_CUDNN_METALLIB_PATH, MUDA_CUDNN_METAL_SOURCE_PATH, function_name);
+  return LibraryExecutor::Instance().GetOrLoadPipeline(MUDA_CUDNN_METALLIB_PATH,
+                                                       MUDA_CUDNN_METAL_SOURCE_PATH, function_name);
 }
 
 [[nodiscard]] bool BuildConvParams(const TensorDescriptorState& x_desc,
@@ -91,13 +90,10 @@ using namespace muda::libraries::dnn;
 
 extern "C" {
 
-cudnnStatus_t cudnnGetConvolutionForwardWorkspaceSize(cudnnHandle_t handle,
-                                                      const cudnnTensorDescriptor_t xDesc,
-                                                      const cudnnFilterDescriptor_t wDesc,
-                                                      const cudnnConvolutionDescriptor_t convDesc,
-                                                      const cudnnTensorDescriptor_t yDesc,
-                                                      cudnnConvolutionFwdAlgo_t /*algo*/,
-                                                      size_t* sizeInBytes) {
+cudnnStatus_t cudnnGetConvolutionForwardWorkspaceSize(
+    cudnnHandle_t handle, const cudnnTensorDescriptor_t xDesc, const cudnnFilterDescriptor_t wDesc,
+    const cudnnConvolutionDescriptor_t convDesc, const cudnnTensorDescriptor_t yDesc,
+    cudnnConvolutionFwdAlgo_t /*algo*/, size_t* sizeInBytes) {
   if (sizeInBytes == nullptr) {
     return CUDNN_STATUS_BAD_PARAM;
   }
@@ -157,15 +153,12 @@ cudnnStatus_t cudnnConvolutionForward(cudnnHandle_t handle, const void* alpha,
     return CUDNN_STATUS_BAD_PARAM;
   }
 
-  id<MTLComputePipelineState> pipe = GetCudnnPipeline("muda_cudnn_conv2d_fwd");
-  if (pipe == nil) {
-    return CUDNN_STATUS_INTERNAL_ERROR;
+  cudaStream_t stream = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(ctx->mutex);
+    stream = ctx->stream;
   }
 
-  const std::size_t total_out = static_cast<std::size_t>(params.n) *
-                                static_cast<std::size_t>(params.c_out) *
-                                static_cast<std::size_t>(params.h_out) *
-                                static_cast<std::size_t>(params.w_out);
   const std::array<ShaderArg, 4> args = {
       ShaderArg::Buffer(buf_x),
       ShaderArg::Buffer(buf_w),
@@ -173,22 +166,40 @@ cudnnStatus_t cudnnConvolutionForward(cudnnHandle_t handle, const void* alpha,
       ShaderArg::Value(params),
   };
 
-  cudaStream_t stream = nullptr;
-  {
-    std::lock_guard<std::mutex> lock(ctx->mutex);
-    stream = ctx->stream;
+  const std::size_t n_spatial = static_cast<std::size_t>(params.n) *
+                                static_cast<std::size_t>(params.h_out) *
+                                static_cast<std::size_t>(params.w_out);
+  if (params.groups == 1 && params.w_format == 0 && (params.c_out >= 16 || n_spatial >= 32)) {
+    id<MTLComputePipelineState> gemm_pipe = GetCudnnPipeline("muda_cudnn_conv2d_fwd_implicit_gemm");
+    if (gemm_pipe != nil) {
+      const std::size_t gx = (n_spatial + 31u) / 32u;
+      const std::size_t gy = (static_cast<std::size_t>(params.c_out) + 31u) / 32u;
+      if (exec.DispatchThreadgroups(gemm_pipe, MTLSizeMake(gx, gy, 1), MTLSizeMake(128, 1, 1), args,
+                                    0, stream) == cudaSuccess) {
+        return CUDNN_STATUS_SUCCESS;
+      }
+    }
   }
+
+  id<MTLComputePipelineState> pipe = GetCudnnPipeline("muda_cudnn_conv2d_fwd");
+  if (pipe == nil) {
+    return CUDNN_STATUS_INTERNAL_ERROR;
+  }
+
+  const std::size_t total_out = n_spatial * static_cast<std::size_t>(params.c_out);
   return (exec.DispatchThreads1D(pipe, total_out, 256, args, 0, stream) == cudaSuccess)
              ? CUDNN_STATUS_SUCCESS
              : CUDNN_STATUS_EXECUTION_FAILED;
 }
 
-cudnnStatus_t cudnnConvolutionBackwardData(
-    cudnnHandle_t handle, const void* alpha, const cudnnFilterDescriptor_t wDesc, const void* w,
-    const cudnnTensorDescriptor_t dyDesc, const void* dy,
-    const cudnnConvolutionDescriptor_t convDesc, cudnnConvolutionBwdDataAlgo_t /*algo*/,
-    void* /*workSpace*/, size_t /*workSpaceSizeInBytes*/, const void* beta,
-    const cudnnTensorDescriptor_t dxDesc, void* dx) {
+cudnnStatus_t cudnnConvolutionBackwardData(cudnnHandle_t handle, const void* alpha,
+                                           const cudnnFilterDescriptor_t wDesc, const void* w,
+                                           const cudnnTensorDescriptor_t dyDesc, const void* dy,
+                                           const cudnnConvolutionDescriptor_t convDesc,
+                                           cudnnConvolutionBwdDataAlgo_t /*algo*/,
+                                           void* /*workSpace*/, size_t /*workSpaceSizeInBytes*/,
+                                           const void* beta, const cudnnTensorDescriptor_t dxDesc,
+                                           void* dx) {
   if (alpha == nullptr || beta == nullptr || w == nullptr || dy == nullptr || dx == nullptr) {
     return CUDNN_STATUS_BAD_PARAM;
   }
@@ -227,10 +238,9 @@ cudnnStatus_t cudnnConvolutionBackwardData(
     return CUDNN_STATUS_INTERNAL_ERROR;
   }
 
-  const std::size_t total_in = static_cast<std::size_t>(params.n) *
-                               static_cast<std::size_t>(params.c_in) *
-                               static_cast<std::size_t>(params.h_in) *
-                               static_cast<std::size_t>(params.w_in);
+  const std::size_t total_in =
+      static_cast<std::size_t>(params.n) * static_cast<std::size_t>(params.c_in) *
+      static_cast<std::size_t>(params.h_in) * static_cast<std::size_t>(params.w_in);
   const std::array<ShaderArg, 4> args = {
       ShaderArg::Buffer(buf_w),
       ShaderArg::Buffer(buf_dy),
@@ -248,12 +258,14 @@ cudnnStatus_t cudnnConvolutionBackwardData(
              : CUDNN_STATUS_EXECUTION_FAILED;
 }
 
-cudnnStatus_t cudnnConvolutionBackwardFilter(
-    cudnnHandle_t handle, const void* alpha, const cudnnTensorDescriptor_t xDesc, const void* x,
-    const cudnnTensorDescriptor_t dyDesc, const void* dy,
-    const cudnnConvolutionDescriptor_t convDesc, cudnnConvolutionBwdFilterAlgo_t /*algo*/,
-    void* /*workSpace*/, size_t /*workSpaceSizeInBytes*/, const void* beta,
-    const cudnnFilterDescriptor_t dwDesc, void* dw) {
+cudnnStatus_t cudnnConvolutionBackwardFilter(cudnnHandle_t handle, const void* alpha,
+                                             const cudnnTensorDescriptor_t xDesc, const void* x,
+                                             const cudnnTensorDescriptor_t dyDesc, const void* dy,
+                                             const cudnnConvolutionDescriptor_t convDesc,
+                                             cudnnConvolutionBwdFilterAlgo_t /*algo*/,
+                                             void* /*workSpace*/, size_t /*workSpaceSizeInBytes*/,
+                                             const void* beta, const cudnnFilterDescriptor_t dwDesc,
+                                             void* dw) {
   if (alpha == nullptr || beta == nullptr || x == nullptr || dy == nullptr || dw == nullptr) {
     return CUDNN_STATUS_BAD_PARAM;
   }
@@ -466,6 +478,41 @@ cudnnStatus_t cudnnActivationForward(cudnnHandle_t handle,
     return CUDNN_STATUS_BAD_PARAM;
   }
 
+  cudaStream_t stream = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(ctx->mutex);
+    stream = ctx->stream;
+  }
+
+  const std::size_t total = static_cast<std::size_t>(x_d->n) * static_cast<std::size_t>(x_d->c) *
+                            static_cast<std::size_t>(x_d->h) * static_cast<std::size_t>(x_d->w);
+  const int hw = x_d->h * x_d->w;
+  const int chw = x_d->c * hw;
+  const bool is_contiguous =
+      (x_d->w_stride == 1 && x_d->h_stride == x_d->w && x_d->c_stride == hw &&
+       x_d->n_stride == chw && y_d->w_stride == 1 && y_d->h_stride == y_d->w &&
+       y_d->c_stride == hw && y_d->n_stride == chw);
+
+  if (is_contiguous && (total & 3u) == 0u && (buf_x.offset & 15u) == 0u &&
+      (buf_y.offset & 15u) == 0u) {
+    id<MTLComputePipelineState> pipe4 = GetCudnnPipeline("muda_cudnn_activation_fwd_vec4");
+    if (pipe4 != nil) {
+      const auto n_vec4 = static_cast<std::uint32_t>(total >> 2u);
+      const int mode_val = static_cast<int>(act_d->mode);
+      const float alpha_val = *static_cast<const float*>(alpha);
+      const float beta_val = *static_cast<const float*>(beta);
+      const float coef_val = static_cast<float>(act_d->coef);
+      const std::array<ShaderArg, 7> args4 = {
+          ShaderArg::Buffer(buf_x),   ShaderArg::Buffer(buf_y),    ShaderArg::Value(n_vec4),
+          ShaderArg::Value(mode_val), ShaderArg::Value(alpha_val), ShaderArg::Value(beta_val),
+          ShaderArg::Value(coef_val),
+      };
+      return (exec.DispatchThreads1D(pipe4, n_vec4, 256, args4, 0, stream) == cudaSuccess)
+                 ? CUDNN_STATUS_SUCCESS
+                 : CUDNN_STATUS_EXECUTION_FAILED;
+    }
+  }
+
   id<MTLComputePipelineState> pipe = GetCudnnPipeline("muda_cudnn_activation_fwd");
   if (pipe == nil) {
     return CUDNN_STATUS_INTERNAL_ERROR;
@@ -489,19 +536,12 @@ cudnnStatus_t cudnnActivationForward(cudnnHandle_t handle,
   params.beta = *static_cast<const float*>(beta);
   params.coef = static_cast<float>(act_d->coef);
 
-  const std::size_t total = static_cast<std::size_t>(x_d->n) * static_cast<std::size_t>(x_d->c) *
-                            static_cast<std::size_t>(x_d->h) * static_cast<std::size_t>(x_d->w);
   const std::array<ShaderArg, 3> args = {
       ShaderArg::Buffer(buf_x),
       ShaderArg::Buffer(buf_y),
       ShaderArg::Value(params),
   };
 
-  cudaStream_t stream = nullptr;
-  {
-    std::lock_guard<std::mutex> lock(ctx->mutex);
-    stream = ctx->stream;
-  }
   return (exec.DispatchThreads1D(pipe, total, 256, args, 0, stream) == cudaSuccess)
              ? CUDNN_STATUS_SUCCESS
              : CUDNN_STATUS_EXECUTION_FAILED;
@@ -607,6 +647,40 @@ cudnnStatus_t cudnnSoftmaxForward(cudnnHandle_t handle, cudnnSoftmaxAlgorithm_t 
     return CUDNN_STATUS_BAD_PARAM;
   }
 
+  cudaStream_t stream = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(ctx->mutex);
+    stream = ctx->stream;
+  }
+
+  const int hw = x_d->h * x_d->w;
+  const int chw = x_d->c * hw;
+  const bool is_contiguous =
+      (x_d->w_stride == 1 && x_d->h_stride == x_d->w && x_d->c_stride == hw &&
+       x_d->n_stride == chw && y_d->w_stride == 1 && y_d->h_stride == y_d->w &&
+       y_d->c_stride == hw && y_d->n_stride == chw);
+
+  if (is_contiguous && (mode == CUDNN_SOFTMAX_MODE_INSTANCE || (x_d->h == 1 && x_d->w == 1))) {
+    id<MTLComputePipelineState> warp_pipe = GetCudnnPipeline("muda_cudnn_softmax_warp_contiguous");
+    if (warp_pipe != nil) {
+      const auto num_slices = static_cast<std::uint32_t>(x_d->n);
+      const auto slice_len = static_cast<std::uint32_t>(chw);
+      const int algo_val = static_cast<int>(algo);
+      const float alpha_val = *static_cast<const float*>(alpha);
+      const float beta_val = *static_cast<const float*>(beta);
+      const std::array<ShaderArg, 7> warp_args = {
+          ShaderArg::Buffer(buf_x),    ShaderArg::Buffer(buf_y),   ShaderArg::Value(num_slices),
+          ShaderArg::Value(slice_len), ShaderArg::Value(algo_val), ShaderArg::Value(alpha_val),
+          ShaderArg::Value(beta_val),
+      };
+      const std::size_t gx = (static_cast<std::size_t>(num_slices) + 7u) / 8u;
+      return (exec.DispatchThreadgroups(warp_pipe, MTLSizeMake(gx, 1, 1), MTLSizeMake(256, 1, 1),
+                                        warp_args, 0, stream) == cudaSuccess)
+                 ? CUDNN_STATUS_SUCCESS
+                 : CUDNN_STATUS_EXECUTION_FAILED;
+    }
+  }
+
   id<MTLComputePipelineState> pipe = GetCudnnPipeline("muda_cudnn_softmax_fwd");
   if (pipe == nil) {
     return CUDNN_STATUS_INTERNAL_ERROR;
@@ -640,11 +714,6 @@ cudnnStatus_t cudnnSoftmaxForward(cudnnHandle_t handle, cudnnSoftmaxAlgorithm_t 
       ShaderArg::Value(params),
   };
 
-  cudaStream_t stream = nullptr;
-  {
-    std::lock_guard<std::mutex> lock(ctx->mutex);
-    stream = ctx->stream;
-  }
   return (exec.DispatchThreads1D(pipe, threads, 256, args, 0, stream) == cudaSuccess)
              ? CUDNN_STATUS_SUCCESS
              : CUDNN_STATUS_EXECUTION_FAILED;
@@ -717,8 +786,8 @@ cudnnStatus_t cudnnBatchNormalizationForwardInference(
   const std::size_t total = static_cast<std::size_t>(x_d->n) * static_cast<std::size_t>(x_d->c) *
                             static_cast<std::size_t>(x_d->h) * static_cast<std::size_t>(x_d->w);
   const std::array<ShaderArg, 7> args = {
-      ShaderArg::Buffer(buf_x),     ShaderArg::Buffer(buf_y),    ShaderArg::Buffer(buf_scale),
-      ShaderArg::Buffer(buf_bias),  ShaderArg::Buffer(buf_mean), ShaderArg::Buffer(buf_var),
+      ShaderArg::Buffer(buf_x),    ShaderArg::Buffer(buf_y),    ShaderArg::Buffer(buf_scale),
+      ShaderArg::Buffer(buf_bias), ShaderArg::Buffer(buf_mean), ShaderArg::Buffer(buf_var),
       ShaderArg::Value(params),
   };
 
@@ -737,7 +806,8 @@ cudnnStatus_t cudnnBatchNormalizationForwardTraining(
     const cudnnTensorDescriptor_t xDesc, const void* x, const cudnnTensorDescriptor_t yDesc,
     void* y, const cudnnTensorDescriptor_t bnScaleBiasMeanVarDesc, const void* bnScale,
     const void* bnBias, double exponentialAverageFactor, void* resultRunningMean,
-    void* resultRunningVariance, double epsilon, void* resultSaveMean, void* resultSaveInvVariance) {
+    void* resultRunningVariance, double epsilon, void* resultSaveMean,
+    void* resultSaveInvVariance) {
   if (alpha == nullptr || beta == nullptr || x == nullptr || y == nullptr || bnScale == nullptr ||
       bnBias == nullptr || epsilon <= 0.0) {
     return CUDNN_STATUS_BAD_PARAM;
@@ -812,12 +882,10 @@ cudnnStatus_t cudnnBatchNormalizationForwardTraining(
   const auto exp_factor = static_cast<float>(exponentialAverageFactor);
 
   const std::array<ShaderArg, 12> args = {
-      ShaderArg::Buffer(buf_x),       ShaderArg::Buffer(buf_y),
-      ShaderArg::Buffer(buf_scale),   ShaderArg::Buffer(buf_bias),
-      ShaderArg::Buffer(buf_rmean),   ShaderArg::Buffer(buf_rvar),
-      ShaderArg::Buffer(buf_smean),   ShaderArg::Buffer(buf_sivar),
-      ShaderArg::Value(params),       ShaderArg::Value(exp_factor),
-      ShaderArg::Value(has_running),  ShaderArg::Value(has_save),
+      ShaderArg::Buffer(buf_x),     ShaderArg::Buffer(buf_y),      ShaderArg::Buffer(buf_scale),
+      ShaderArg::Buffer(buf_bias),  ShaderArg::Buffer(buf_rmean),  ShaderArg::Buffer(buf_rvar),
+      ShaderArg::Buffer(buf_smean), ShaderArg::Buffer(buf_sivar),  ShaderArg::Value(params),
+      ShaderArg::Value(exp_factor), ShaderArg::Value(has_running), ShaderArg::Value(has_save),
   };
 
   cudaStream_t stream = nullptr;

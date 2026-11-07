@@ -38,7 +38,14 @@ void KernelRegistry::Insert(const void* host_func, std::span<const mudaKernelPar
   RegisteredKernel entry;
   entry.params.assign(params.begin(), params.end());
   entry.pipeline = pipeline;
+  if (pipeline != nil) {
+    entry.max_threads_per_threadgroup = pipeline.maxTotalThreadsPerThreadgroup;
+    if (pipeline.device != nil) {
+      entry.max_threadgroup_memory_bytes = pipeline.device.maxThreadgroupMemoryLength;
+    }
+  }
   kernels_[host_func] = std::move(entry);
+  epoch_.fetch_add(1, std::memory_order_release);
 }
 
 const RegisteredKernel* KernelRegistry::Find(const void* host_func) const noexcept {
@@ -49,6 +56,9 @@ const RegisteredKernel* KernelRegistry::Find(const void* host_func) const noexce
   return &it->second;
 }
 
-void KernelRegistry::Clear() { kernels_.clear(); }
+void KernelRegistry::Clear() {
+  kernels_.clear();
+  epoch_.fetch_add(1, std::memory_order_release);
+}
 
 }  // namespace muda::runtime::cudart

@@ -20,7 +20,7 @@ namespace muda::runtime::cudart {
 
 struct BoundArgument {
   mudaKernelParamKind kind = mudaKernelParamBuffer;
-  id<MTLBuffer> buffer = nil;
+  __unsafe_unretained id<MTLBuffer> buffer = nil;
   std::size_t offset = 0;
   const void* bytes = nullptr;
   std::size_t size = 0;

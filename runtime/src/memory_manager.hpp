@@ -36,7 +36,15 @@ struct ResolvedEndpoint {
   std::size_t offset = 0;
   std::size_t size = 0;
   bool is_device = false;
-  
+};
+
+struct LightweightEndpoint {
+  __unsafe_unretained id<MTLBuffer> buffer = nil;
+  DeviceAddress base_address{0};
+  std::size_t size = 0;
+  std::size_t offset = 0;
+  cudaMemoryType memory_type = cudaMemoryTypeUnregistered;
+  bool found = false;
 };
 
 class MemoryManager {
@@ -64,8 +72,14 @@ class MemoryManager {
 
   [[nodiscard]] bool ResolveBuffer(DeviceAddress addr, id<MTLBuffer> __strong* out_buffer,
                                    std::size_t* out_offset) const noexcept;
+  [[nodiscard]] bool ResolveBufferFast(DeviceAddress addr,
+                                       __unsafe_unretained id<MTLBuffer>* out_buffer,
+                                       std::size_t* out_offset) const noexcept;
   [[nodiscard]] bool ResolveEndpoint(DeviceAddress addr,
                                      ResolvedEndpoint* out_endpoint) const noexcept;
+  void ResolveEndpointsPair(DeviceAddress dst_addr, DeviceAddress src_addr,
+                            LightweightEndpoint* out_dst,
+                            LightweightEndpoint* out_src) const noexcept;
 
   [[nodiscard]] std::optional<AllocationRecord> SnapshotRecord(DeviceAddress addr) const noexcept;
   [[nodiscard]] bool ValidateRange(DeviceAddress addr, std::size_t count) const noexcept;

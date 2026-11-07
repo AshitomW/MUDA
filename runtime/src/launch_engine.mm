@@ -20,8 +20,18 @@
 namespace muda::runtime::cudart {
 namespace {
 
-constexpr std::size_t kMaxBatchDispatches = 64;
+constexpr std::size_t kMaxBatchDispatches = 256;
 constexpr std::size_t kMaxInlineArgs = 32;
+
+struct KernelMruEntry {
+  std::uint64_t epoch = 0;
+  const void* host_func = nullptr;
+  const RegisteredKernel* kernel = nullptr;
+};
+
+constexpr std::size_t kKernelMruSize = 4;
+thread_local std::array<KernelMruEntry, kKernelMruSize> tl_kernel_mru{};
+thread_local std::size_t tl_kernel_mru_cursor = 0;
 
 }  // namespace
 
@@ -29,15 +39,11 @@ cudaError_t LaunchEngine::ValidateLaunchConfig(const RegisteredKernel& kernel, d
                                                std::size_t shared_mem) noexcept {
   const std::size_t threads_per_block =
       static_cast<std::size_t>(block_dim.x) * block_dim.y * block_dim.z;
-  const std::size_t max_threads = kernel.pipeline.maxTotalThreadsPerThreadgroup;
-  if (threads_per_block > max_threads) {
+  if (threads_per_block > kernel.max_threads_per_threadgroup) {
     return RecordError(cudaErrorInvalidConfiguration);
   }
-  if (shared_mem > 0) {
-    const std::size_t max_shared = kernel.pipeline.device.maxThreadgroupMemoryLength;
-    if (shared_mem > max_shared) {
-      return RecordError(cudaErrorInvalidConfiguration);
-    }
+  if (shared_mem > kernel.max_threadgroup_memory_bytes) {
+    return RecordError(cudaErrorInvalidConfiguration);
   }
   return cudaSuccess;
 }
@@ -68,7 +74,7 @@ cudaError_t LaunchEngine::BindLaunchArguments(const RegisteredKernel& kernel, vo
         return RecordError(cudaErrorInvalidValue);
       }
       const DeviceAddress addr = DeviceAddress::FromPointer(dev_ptr);
-      if (!memory.ResolveBuffer(addr, &bound.buffer, &bound.offset)) {
+      if (!memory.ResolveBufferFast(addr, &bound.buffer, &bound.offset)) {
         return RecordError(cudaErrorInvalidValue);
       }
     } else {
@@ -83,52 +89,101 @@ cudaError_t LaunchEngine::EncodeAndCommitLaunch(
     const RegisteredKernel& kernel, std::span<const BoundArgument> bound_args, dim3 grid_dim,
     dim3 block_dim, std::size_t shared_mem, id<MTLCommandQueue> target_queue,
     StreamState* stream_state, StreamManager& streams) noexcept {
-  std::unique_lock<std::mutex> lock;
-  if (stream_state != nullptr) {
-    lock = std::unique_lock<std::mutex>(stream_state->mutex);
-  } else {
-    lock = std::unique_lock<std::mutex>(streams.DefaultStreamMutex());
-  }
+  std::unique_lock<std::mutex> lock =
+      (stream_state != nullptr) ? std::unique_lock<std::mutex>(stream_state->mutex)
+                                : std::unique_lock<std::mutex>(streams.DefaultStreamMutex());
 
   __strong id<MTLCommandBuffer>& active_cmd = (stream_state != nullptr)
                                                   ? stream_state->active_command_buffer
                                                   : streams.DefaultActiveCommandBuffer();
   __strong id<MTLComputeCommandEncoder>& active_enc =
       (stream_state != nullptr) ? stream_state->active_encoder : streams.DefaultActiveEncoder();
+  __strong id<MTLBlitCommandEncoder>& active_blit = (stream_state != nullptr)
+                                                        ? stream_state->active_blit_encoder
+                                                        : streams.DefaultActiveBlitEncoder();
   __strong id<MTLComputePipelineState>& active_pipe =
       (stream_state != nullptr) ? stream_state->active_pipeline : streams.DefaultActivePipeline();
   std::size_t& active_disp = (stream_state != nullptr) ? stream_state->active_dispatches
                                                        : streams.DefaultActiveDispatches();
+  EncoderHazardState& enc_state =
+      (stream_state != nullptr) ? stream_state->encoder_state : streams.DefaultEncoderState();
 
-  if (active_cmd == nil || active_enc == nil) {
-    active_cmd = [target_queue commandBuffer];
+  if (active_blit != nil) {
+    [active_blit endEncoding];
+    active_blit = nil;
+  }
+
+  if (active_cmd == nil) {
+    active_cmd = [target_queue commandBufferWithUnretainedReferences];
     if (active_cmd == nil) {
       return RecordError(cudaErrorLaunchFailure);
     }
+    active_disp = 0;
+  }
+
+  if (active_enc == nil) {
     active_enc = [active_cmd computeCommandEncoder];
     if (active_enc == nil) {
       active_cmd = nil;
       return RecordError(cudaErrorLaunchFailure);
     }
     active_pipe = nil;
-    active_disp = 0;
+    enc_state.Reset();
   }
 
+  const bool pipeline_changed = (active_pipe != nil && active_pipe != kernel.pipeline);
   if (active_pipe != kernel.pipeline) {
     [active_enc setComputePipelineState:kernel.pipeline];
     active_pipe = kernel.pipeline;
   }
 
+  // Emit a buffer memory barrier only when a buffer from an earlier dispatch in this encoder
+  // batch is reused across a pipeline change, bound at a different parameter slot (e.g.,
+  // ping-pong or producer-consumer), or bound at a different byte offset.
+  bool needs_barrier = false;
   if (active_disp > 0) {
+    for (std::size_t index = 0; index < bound_args.size(); ++index) {
+      const BoundArgument& bound = bound_args[index];
+      if (bound.kind == mudaKernelParamBuffer) {
+        const void* buf_ptr = (__bridge const void*)bound.buffer;
+        if (enc_state.HasHazard(buf_ptr, bound.offset, index, pipeline_changed)) {
+          needs_barrier = true;
+          break;
+        }
+      }
+    }
+  }
+  if (needs_barrier) {
     [active_enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+    enc_state.ClearHazards();
   }
 
   for (std::size_t index = 0; index < bound_args.size(); ++index) {
     const BoundArgument& bound = bound_args[index];
     if (bound.kind == mudaKernelParamBuffer) {
-      [active_enc setBuffer:bound.buffer offset:bound.offset atIndex:index];
+      const void* buf_ptr = (__bridge const void*)bound.buffer;
+      if (index < kMaxEncoderBufferSlots) {
+        BoundBufferSlot& slot = enc_state.slots[index];
+        if (slot.valid && slot.buffer_ptr == buf_ptr) {
+          if (slot.offset != bound.offset) {
+            [active_enc setBufferOffset:bound.offset atIndex:index];
+            slot.offset = bound.offset;
+          }
+        } else {
+          [active_enc setBuffer:bound.buffer offset:bound.offset atIndex:index];
+          slot.buffer_ptr = buf_ptr;
+          slot.offset = bound.offset;
+          slot.valid = true;
+        }
+      } else {
+        [active_enc setBuffer:bound.buffer offset:bound.offset atIndex:index];
+      }
+      enc_state.MarkDirty(buf_ptr, bound.offset, index);
     } else {
       [active_enc setBytes:bound.bytes length:bound.size atIndex:index];
+      if (index < kMaxEncoderBufferSlots) {
+        enc_state.slots[index].valid = false;
+      }
     }
   }
 
@@ -140,6 +195,9 @@ cudaError_t LaunchEngine::EncodeAndCommitLaunch(
   [active_enc dispatchThreadgroups:MTLSizeMake(grid_dim.x, grid_dim.y, grid_dim.z)
              threadsPerThreadgroup:MTLSizeMake(block_dim.x, block_dim.y, block_dim.z)];
   active_disp++;
+  if (stream_state == nullptr) {
+    streams.SetDefaultActiveDispatchesAtomic(active_disp);
+  }
 
   if (active_disp >= kMaxBatchDispatches) {
     if (stream_state != nullptr) {
@@ -164,42 +222,62 @@ cudaError_t LaunchEngine::LaunchKernel(const void* func, dim3 grid_dim, dim3 blo
   }
 
   std::shared_ptr<StreamState> stream_state;
-  id<MTLCommandQueue> target_queue = nil;
-  const cudaError_t s_status =
-      streams.ResolveStreamQueue(stream_handle, default_queue, &stream_state, &target_queue);
-  if (s_status != cudaSuccess) {
-    return s_status;
+  id<MTLCommandQueue> target_queue = default_queue;
+  if (stream_handle != nullptr) {
+    const cudaError_t s_status =
+        streams.ResolveStreamQueue(stream_handle, default_queue, &stream_state, &target_queue);
+    if (s_status != cudaSuccess) {
+      return s_status;
+    }
+  } else if (default_queue == nil) {
+    return RecordError(cudaErrorInitializationError);
   }
 
-  @autoreleasepool {
-    std::shared_lock<std::shared_mutex> lock(mutex_);
-    const RegisteredKernel* kernel = kernels_.Find(func);
+  const RegisteredKernel* kernel = nullptr;
+  const std::uint64_t cur_epoch = kernels_.Epoch();
+  for (const KernelMruEntry& entry : tl_kernel_mru) {
+    if (entry.epoch == cur_epoch && entry.host_func == func && entry.kernel != nullptr) {
+      kernel = entry.kernel;
+      break;
+    }
+  }
+
+  std::shared_lock<std::shared_mutex> fallback_lock;
+  if (kernel == nullptr) {
+    fallback_lock = std::shared_lock<std::shared_mutex>(mutex_);
+    kernel = kernels_.Find(func);
     if (kernel == nullptr) {
       return RecordError(cudaErrorInvalidDeviceFunction);
     }
-
-    const cudaError_t config_status = ValidateLaunchConfig(*kernel, block_dim, shared_mem);
-    if (config_status != cudaSuccess) {
-      return config_status;
-    }
-
-    std::array<BoundArgument, kMaxInlineArgs> inline_args;
-    std::vector<BoundArgument> heap_args;
-    const std::size_t param_count = kernel->params.size();
-    std::span<BoundArgument> bound_span =
-        (param_count <= kMaxInlineArgs)
-            ? std::span<BoundArgument>(inline_args.data(), param_count)
-            : std::span<BoundArgument>((heap_args.resize(param_count), heap_args.data()),
-                                       param_count);
-
-    const cudaError_t bind_status = BindLaunchArguments(*kernel, args, memory, bound_span);
-    if (bind_status != cudaSuccess) {
-      return bind_status;
-    }
-
-    return EncodeAndCommitLaunch(*kernel, bound_span, grid_dim, block_dim, shared_mem, target_queue,
-                                 stream_state.get(), streams);
+    tl_kernel_mru[tl_kernel_mru_cursor] = {
+        .epoch = kernels_.Epoch(),
+        .host_func = func,
+        .kernel = kernel,
+    };
+    tl_kernel_mru_cursor = (tl_kernel_mru_cursor + 1) % kKernelMruSize;
   }
+
+  const cudaError_t config_status = ValidateLaunchConfig(*kernel, block_dim, shared_mem);
+  if (config_status != cudaSuccess) {
+    return config_status;
+  }
+
+  std::array<BoundArgument, kMaxInlineArgs> inline_args;
+  std::vector<BoundArgument> heap_args;
+  const std::size_t param_count = kernel->params.size();
+  std::span<BoundArgument> bound_span =
+      (param_count <= kMaxInlineArgs)
+          ? std::span<BoundArgument>(inline_args.data(), param_count)
+          : std::span<BoundArgument>((heap_args.resize(param_count), heap_args.data()),
+                                     param_count);
+
+  const cudaError_t bind_status = BindLaunchArguments(*kernel, args, memory, bound_span);
+  if (bind_status != cudaSuccess) {
+    return bind_status;
+  }
+
+  return EncodeAndCommitLaunch(*kernel, bound_span, grid_dim, block_dim, shared_mem, target_queue,
+                               stream_state.get(), streams);
 }
 
 cudaError_t LaunchEngine::RegisterLibraryKernel(id<MTLDevice> device, id<MTLLibrary> library,
@@ -285,9 +363,9 @@ cudaError_t LaunchEngine::RegisterKernelFromData(const void* host_func, const vo
   }
 }
 
-cudaError_t LaunchEngine::RegisterKernelPipeline(
-    const void* host_func, std::span<const mudaKernelParamDesc> params,
-    id<MTLComputePipelineState> pipeline) noexcept {
+cudaError_t LaunchEngine::RegisterKernelPipeline(const void* host_func,
+                                                 std::span<const mudaKernelParamDesc> params,
+                                                 id<MTLComputePipelineState> pipeline) noexcept {
   if (host_func == nullptr || pipeline == nil) {
     return RecordError(cudaErrorInvalidValue);
   }

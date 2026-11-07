@@ -15,7 +15,7 @@
 namespace muda::libraries {
 namespace {
 
-constexpr std::size_t kMaxBatchDispatches = 64;
+constexpr std::size_t kMaxBatchDispatches = 256;
 
 [[nodiscard]] constexpr std::size_t AlignUp16(std::size_t value) noexcept {
   const std::size_t rem = value % 16u;
@@ -79,10 +79,24 @@ id<MTLComputePipelineState> LibraryExecutor::GetOrLoadPipeline(
     return nil;
   }
 
-  const std::string lib_key(metallib_path);
-  const std::string pipe_key = lib_key + "::" + std::string(function_name);
+  std::string pipe_key;
+  pipe_key.reserve(metallib_path.size() + 2 + function_name.size());
+  pipe_key.append(metallib_path);
+  pipe_key.append("::");
+  pipe_key.append(function_name);
 
-  std::lock_guard<std::mutex> lock(mutex_);
+  {
+    std::shared_lock<std::shared_mutex> rlock(mutex_);
+    if (cached_device_ == device) {
+      auto pipe_it = pipelines_.find(pipe_key);
+      if (pipe_it != pipelines_.end()) {
+        return pipe_it->second;
+      }
+    }
+  }
+
+  const std::string lib_key(metallib_path);
+  std::unique_lock<std::shared_mutex> lock(mutex_);
   if (cached_device_ != device) {
     libraries_.clear();
     pipelines_.clear();
@@ -182,40 +196,89 @@ cudaError_t LibraryExecutor::DispatchThreadgroups(id<MTLComputePipelineState> pi
                                                     : streams.DefaultActiveCommandBuffer();
     __strong id<MTLComputeCommandEncoder>& active_enc =
         (stream_state != nullptr) ? stream_state->active_encoder : streams.DefaultActiveEncoder();
+    __strong id<MTLBlitCommandEncoder>& active_blit = (stream_state != nullptr)
+                                                          ? stream_state->active_blit_encoder
+                                                          : streams.DefaultActiveBlitEncoder();
     __strong id<MTLComputePipelineState>& active_pipe =
         (stream_state != nullptr) ? stream_state->active_pipeline : streams.DefaultActivePipeline();
     std::size_t& active_disp = (stream_state != nullptr) ? stream_state->active_dispatches
                                                          : streams.DefaultActiveDispatches();
+    runtime::cudart::EncoderHazardState& enc_state =
+        (stream_state != nullptr) ? stream_state->encoder_state : streams.DefaultEncoderState();
 
-    if (active_cmd == nil || active_enc == nil) {
+    if (active_blit != nil) {
+      [active_blit endEncoding];
+      active_blit = nil;
+    }
+
+    if (active_cmd == nil) {
       active_cmd = [target_queue commandBuffer];
       if (active_cmd == nil) {
         return cudaErrorLaunchFailure;
       }
+      active_disp = 0;
+    }
+
+    if (active_enc == nil) {
       active_enc = [active_cmd computeCommandEncoder];
       if (active_enc == nil) {
         active_cmd = nil;
         return cudaErrorLaunchFailure;
       }
       active_pipe = nil;
-      active_disp = 0;
+      enc_state.Reset();
     }
 
+    const bool pipeline_changed = (active_pipe != nil && active_pipe != pipeline);
     if (active_pipe != pipeline) {
       [active_enc setComputePipelineState:pipeline];
       active_pipe = pipeline;
     }
 
+    bool needs_barrier = false;
     if (active_disp > 0) {
+      for (std::size_t idx = 0; idx < args.size(); ++idx) {
+        const ShaderArg& arg = args[idx];
+        if (arg.kind == ShaderArg::Kind::kBuffer) {
+          const void* buf_ptr = (__bridge const void*)arg.buffer;
+          if (enc_state.HasHazard(buf_ptr, arg.offset, idx, pipeline_changed)) {
+            needs_barrier = true;
+            break;
+          }
+        }
+      }
+    }
+    if (needs_barrier) {
       [active_enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+      enc_state.ClearHazards();
     }
 
     for (std::size_t idx = 0; idx < args.size(); ++idx) {
       const ShaderArg& arg = args[idx];
       if (arg.kind == ShaderArg::Kind::kBuffer) {
-        [active_enc setBuffer:arg.buffer offset:arg.offset atIndex:idx];
+        const void* buf_ptr = (__bridge const void*)arg.buffer;
+        if (idx < runtime::cudart::kMaxEncoderBufferSlots) {
+          runtime::cudart::BoundBufferSlot& slot = enc_state.slots[idx];
+          if (slot.valid && slot.buffer_ptr == buf_ptr) {
+            if (slot.offset != arg.offset) {
+              [active_enc setBufferOffset:arg.offset atIndex:idx];
+              slot.offset = arg.offset;
+            }
+          } else {
+            [active_enc setBuffer:arg.buffer offset:arg.offset atIndex:idx];
+            slot.buffer_ptr = buf_ptr;
+            slot.offset = arg.offset;
+            slot.valid = true;
+          }
+        } else {
+          [active_enc setBuffer:arg.buffer offset:arg.offset atIndex:idx];
+        }
+        enc_state.MarkDirty(buf_ptr, arg.offset, idx);
       } else {
         [active_enc setBytes:arg.bytes length:arg.size atIndex:idx];
+        if (idx < runtime::cudart::kMaxEncoderBufferSlots) {
+          enc_state.slots[idx].valid = false;
+        }
       }
     }
 
@@ -225,6 +288,9 @@ cudaError_t LibraryExecutor::DispatchThreadgroups(id<MTLComputePipelineState> pi
 
     [active_enc dispatchThreadgroups:grid_size threadsPerThreadgroup:block_size];
     active_disp++;
+    if (stream_state == nullptr) {
+      streams.SetDefaultActiveDispatchesAtomic(active_disp);
+    }
 
     if (active_disp >= kMaxBatchDispatches) {
       if (stream_state != nullptr) {
@@ -237,12 +303,9 @@ cudaError_t LibraryExecutor::DispatchThreadgroups(id<MTLComputePipelineState> pi
   }
 }
 
-cudaError_t LibraryExecutor::DispatchThreads1D(id<MTLComputePipelineState> pipeline,
-                                               std::size_t total_threads,
-                                               std::size_t threads_per_group,
-                                               std::span<const ShaderArg> args,
-                                               std::size_t shared_mem_bytes,
-                                               cudaStream_t stream) noexcept {
+cudaError_t LibraryExecutor::DispatchThreads1D(
+    id<MTLComputePipelineState> pipeline, std::size_t total_threads, std::size_t threads_per_group,
+    std::span<const ShaderArg> args, std::size_t shared_mem_bytes, cudaStream_t stream) noexcept {
   if (pipeline == nil || total_threads == 0) {
     return cudaErrorInvalidConfiguration;
   }
@@ -276,22 +339,42 @@ cudaError_t LibraryExecutor::EncodeCommandBuffer(
 
   @autoreleasepool {
     auto& streams = ctx.Streams();
-    if (stream_state != nullptr) {
-      std::lock_guard<std::mutex> lock(stream_state->mutex);
-      streams.FlushStreamLocked(stream_state.get());
-    } else {
-      std::lock_guard<std::mutex> lock(streams.DefaultStreamMutex());
-      streams.FlushDefaultStreamLocked();
+    std::unique_lock<std::mutex> lock =
+        (stream_state != nullptr) ? std::unique_lock<std::mutex>(stream_state->mutex)
+                                  : std::unique_lock<std::mutex>(streams.DefaultStreamMutex());
+
+    __strong id<MTLCommandBuffer>& active_cmd = (stream_state != nullptr)
+                                                    ? stream_state->active_command_buffer
+                                                    : streams.DefaultActiveCommandBuffer();
+    std::size_t& active_disp = (stream_state != nullptr) ? stream_state->active_dispatches
+                                                         : streams.DefaultActiveDispatches();
+
+    streams.EndActiveEncodersLocked(stream_state.get());
+
+    if (active_cmd == nil) {
+      active_cmd = [target_queue commandBuffer];
+      if (active_cmd == nil) {
+        return cudaErrorLaunchFailure;
+      }
+      active_disp = 0;
     }
 
-    id<MTLCommandBuffer> cmd = [target_queue commandBuffer];
-    if (cmd == nil) {
+    if (!encode_callback(active_cmd)) {
       return cudaErrorLaunchFailure;
     }
-    if (!encode_callback(cmd)) {
-      return cudaErrorLaunchFailure;
+
+    active_disp++;
+    if (stream_state == nullptr) {
+      streams.SetDefaultActiveDispatchesAtomic(active_disp);
     }
-    streams.CommitStreamCommandBuffer(stream_state.get(), cmd);
+
+    if (active_disp >= kMaxBatchDispatches) {
+      if (stream_state != nullptr) {
+        streams.FlushStreamLocked(stream_state.get());
+      } else {
+        streams.FlushDefaultStreamLocked();
+      }
+    }
     return cudaSuccess;
   }
 }
