@@ -90,10 +90,40 @@ add_executable(cusparse_test cusparse_test.cpp)
 target_link_libraries(cusparse_test PRIVATE muda::cusparse cuda muda_warnings)
 add_test(NAME cusparse_test COMMAND cusparse_test)
 
+add_executable(nvrtc_test nvrtc_test.cpp)
+target_link_libraries(nvrtc_test PRIVATE muda::nvrtc muda::cudart cuda muda_warnings)
+add_test(NAME nvrtc_test COMMAND nvrtc_test)
+
+add_executable(header_hygiene_test header_hygiene_test.cpp)
+target_link_libraries(
+  header_hygiene_test
+  PRIVATE
+    muda::cudart
+    muda::cublas
+    muda::cufft
+    muda::cudnn
+    muda::cusparse
+    muda::nvrtc
+    muda_warnings
+)
+target_include_directories(
+  header_hygiene_test
+  PRIVATE
+    "${PROJECT_SOURCE_DIR}/compiler/include"
+)
+add_test(NAME header_hygiene_test COMMAND header_hygiene_test)
+
 set_tests_properties(compiler_test vector_add_test corpus_test warp_intrinsics_test atomics_test half_vector_test PROPERTIES SKIP_RETURN_CODE 77)
 
 add_test(NAME mudac_version COMMAND mudac --version)
+add_test(NAME nvcc_version COMMAND nvcc --version)
 add_test(NAME muda_version COMMAND muda version)
+
+add_executable(muda_cli_test muda_cli_test.cpp)
+target_link_libraries(muda_cli_test PRIVATE muda::compiler muda::runtime muda_warnings)
+target_compile_definitions(muda_cli_test PRIVATE MUDA_CLI_BINARY_PATH="$<TARGET_FILE:muda>")
+add_dependencies(muda_cli_test muda mudac cuda)
+add_test(NAME muda_cli_test COMMAND muda_cli_test)
 
 find_program(UV_EXECUTABLE uv)
 if(UV_EXECUTABLE)
@@ -135,5 +165,15 @@ if(UV_EXECUTABLE)
     python_cuda_library_test
     PROPERTIES
       ENVIRONMENT "NUMBA_CUDA_DRIVER=$<TARGET_FILE:cuda>"
+  )
+
+  add_test(
+    NAME python_pytorch_extension_test
+    COMMAND ${UV_EXECUTABLE} run --with torch --with numpy python3 ${CMAKE_CURRENT_SOURCE_DIR}/python/test_pytorch_cuda_extension.py
+  )
+  set_tests_properties(
+    python_pytorch_extension_test
+    PROPERTIES
+      ENVIRONMENT "MUDA_CUDA_HOME=${PROJECT_BINARY_DIR}/cuda-home"
   )
 endif()

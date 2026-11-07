@@ -26,6 +26,16 @@ struct CacheKeyInput {
   std::string_view dependencies_hash;
 };
 
+struct CacheStats {
+  std::size_t entry_count = 0;
+  std::uint64_t total_bytes = 0;
+};
+
+struct CacheVerifyReport {
+  std::size_t valid_entries = 0;
+  std::size_t corrupted_evicted = 0;
+};
+
 class ArtifactCache {
  public:
   explicit ArtifactCache(std::filesystem::path root_dir);
@@ -39,6 +49,10 @@ class ArtifactCache {
   [[nodiscard]] std::optional<std::vector<std::uint8_t>> Lookup(std::string_view key) const;
   bool Store(std::string_view key, std::span<const std::uint8_t> metallib_bytes) const;
   bool CopyCachedMetallibTo(std::string_view key, const std::filesystem::path& destination) const;
+
+  [[nodiscard]] CacheStats Inspect() const noexcept;
+  bool Clear() const noexcept;
+  [[nodiscard]] CacheVerifyReport Verify() const noexcept;
 
   [[nodiscard]] const std::filesystem::path& root_dir() const noexcept { return root_dir_; }
 

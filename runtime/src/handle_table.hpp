@@ -28,6 +28,7 @@ enum class HandleKind : std::uint8_t {
   kCusparseSpMatDesc = 12,
   kCusparseDnVecDesc = 13,
   kCusparseDnMatDesc = 14,
+  kNvrtcProgram = 15,
 };
 
 /**

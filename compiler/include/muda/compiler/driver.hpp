@@ -29,9 +29,14 @@ struct CompileOptions {
   OptimizationLevel optimization = OptimizationLevel::kO3;
   std::filesystem::path cache_dir;
   bool disable_cache = false;
+  bool position_independent = false;
+  bool print_metadata = false;
   std::vector<std::filesystem::path> include_dirs;
   std::vector<std::filesystem::path> library_dirs;
   std::vector<std::string> libraries;
+  std::vector<std::string> defines;
+  std::vector<std::string> host_compiler_flags;
+  std::vector<std::string> linker_flags;
 };
 
 struct CompileResult {

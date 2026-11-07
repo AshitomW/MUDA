@@ -45,11 +45,20 @@ MUDA bridges this gap by translating source and PTX into Metal, providing runtim
 
 ### 1. What Is Working Today
 
-#### Compiler (`mudac`)
-- **Compilation Targets:** Compiles `.cu` and `.ptx` files into native macOS executables, object files (`-c`), Metal Shading Language (`-S`), or `.metallib` (`--emit-metallib`).
+#### Compiler (`mudac` & `nvcc`)
+- **Compilation Targets:** Compiles `.cu` and `.ptx` files into native macOS executables, shared libraries (`-shared` / `-dynamiclib`), object files (`-c`), Metal Shading Language (`-S`), or `.metallib` (`--emit-metallib`).
+- **`nvcc` Compatibility Wrapper:** Supports `-shared`, `-fPIC`, `-D`, `-U`, `-Xcompiler`, `-Xlinker`, `-gencode`, `-arch`, `--expt-relaxed-constexpr`, and `--muda-print-metadata`.
 - **Intermediate Representation (MMIR):** Validates kernel signatures, parameter bindings, access qualifiers, and shared memory allocations.
-- **Content-Addressed Cache v2:** Eliminates redundant recompilations via content hashing, dependency closure tracking, and fast-math flags (`~/.cache/muda/v1`).
+- **Content-Addressed Cache v2:** Eliminates redundant recompilations via content hashing, dependency closure tracking, and fast-math flags (`~/.cache/muda/v1`), inspectable and verifiable via `muda cache <info|clear|verify>`.
 - **Diagnostics (`ALY-*`):** Generates deterministic diagnostic errors and source maps when unsupported constructs are detected.
+
+#### Acceleration Libraries & Runtime Compilation (`libcublas`, `libcufft`, `libcudnn`, `libcusparse`, `libnvrtc`)
+- **cuBLAS (`libcublas.dylib`):** Level-1 (`Saxpy`, `Scopy`, `Sscal`, `Sswap`, `Sdot`, `Snrm2`, `Sasum`, `Isamax`), Level-2 (`Sgemv`), and Level-3 (`Sgemm`, `Hgemm`, `GemmEx`, `SgemmStridedBatched`, `Sgeam`) backed by Apple `MPSMatrixMultiplication` and `simdgroup_float8x8` shaders.
+- **cuFFT (`libcufft.dylib`):** 1D, 2D, 3D, and batched `cufftPlanMany` (`C2C`, `R2C`, `C2R`) with Stockham Radix-2 and general-radix Metal kernels.
+- **cuDNN (`libcudnn.dylib`):** 2D Convolutions (forward, backward-data, backward-filter, backward-bias), Activations (ReLU, Sigmoid, Tanh, ELU, Swish), Pooling (Max, Avg), Softmax, and Batch Normalization (inference & training).
+- **cuSPARSE (`libcusparse.dylib`):** CSR sparse matrix descriptors, `cusparseSpMV`, and `cusparseSpMM`.
+- **NVRTC (`libnvrtc.dylib`):** Runtime compilation of CUDA C++ strings (`nvrtcCreateProgram`, `nvrtcCompileProgram`, `nvrtcGetPTX`, `nvrtcGetLoweredName`) directly into in-memory Metal pipelines via `cuModuleLoadData`.
+- **PyTorch Custom CUDA Extension Bridge (`python/muda`):** Compiles custom `.cu` kernels into `.dylib` extensions and integrates with `torch.autograd.Function` and `torch.Tensor` on Apple Silicon.
 
 #### CUDA Runtime API (`libcudart` / `muda_runtime`)
 - **Unified Memory:** `cudaMalloc`, `cudaMallocManaged`, `cudaMallocHost`, and `cudaMallocPitch`.

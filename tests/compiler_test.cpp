@@ -3,11 +3,16 @@
  * @brief Tests CUDA-to-Metal compilation, MSL emission, object compilation, and executable linking.
  */
 
+#include <dlfcn.h>
+
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string>
+#include <vector>
 
+#include "cuda_runtime.h"
 #include "muda/compiler/driver.hpp"
 #include "muda/compiler/toolchain.hpp"
 #include "test_utils.hpp"
@@ -173,6 +178,84 @@ int main() {
     }
   }
 
-  std::cout << "compiled and executed vector_add end-to-end\n";
+  // 5. Test multi-kernel .cu file, preprocessor defines (-D), and shared library (-shared)
+  {
+    const std::filesystem::path multi_cu = temp_dir.path() / "multi_kernel_ext.cu";
+    {
+      std::ofstream out(multi_cu);
+      out << "#include <cuda_runtime.h>\n"
+          << "#ifndef SCALE_FACTOR\n"
+          << "#define SCALE_FACTOR 1.0f\n"
+          << "#endif\n"
+          << "__global__ void k_scale(float* data, int n) {\n"
+          << "  int idx = blockIdx.x * blockDim.x + threadIdx.x;\n"
+          << "  if (idx < n) { data[idx] = data[idx] * SCALE_FACTOR; }\n"
+          << "}\n"
+          << "__global__ void k_bias(float* data, float bias, int n) {\n"
+          << "  int idx = blockIdx.x * blockDim.x + threadIdx.x;\n"
+          << "  if (idx < n) { data[idx] = data[idx] + bias; }\n"
+          << "}\n"
+          << "extern \"C\" int run_scale_and_bias(float* host_io, int n, float bias) {\n"
+          << "  float* dev = nullptr;\n"
+          << "  if (cudaMalloc(reinterpret_cast<void**>(&dev), static_cast<size_t>(n) * "
+             "sizeof(float)) != cudaSuccess) return 1;\n"
+          << "  if (cudaMemcpy(dev, host_io, static_cast<size_t>(n) * sizeof(float), "
+             "cudaMemcpyHostToDevice) != cudaSuccess) return 2;\n"
+          << "  k_scale<<<(n + 63) / 64, 64>>>(dev, n);\n"
+          << "  k_bias<<<(n + 63) / 64, 64>>>(dev, bias, n);\n"
+          << "  if (cudaDeviceSynchronize() != cudaSuccess) return 3;\n"
+          << "  if (cudaMemcpy(host_io, dev, static_cast<size_t>(n) * sizeof(float), "
+             "cudaMemcpyDeviceToHost) != cudaSuccess) return 4;\n"
+          << "  cudaFree(dev);\n"
+          << "  return 0;\n"
+          << "}\n";
+    }
+
+    const std::filesystem::path dylib_path = temp_dir.path() / "libmulti_kernel_ext.dylib";
+    muda::compiler::CompileOptions shared_opts;
+    shared_opts.input = multi_cu;
+    shared_opts.output = dylib_path;
+    shared_opts.output_kind = muda::compiler::OutputKind::kSharedLibrary;
+    shared_opts.position_independent = true;
+    shared_opts.defines.emplace_back("-DSCALE_FACTOR=3.0f");
+
+    const muda::compiler::CompileResult shared_res = muda::compiler::Compile(shared_opts);
+    if (shared_res.status != muda::compiler::Status::kOk) {
+      std::cerr << "shared library compile failed [" << shared_res.diagnostic_id()
+                << "]: " << shared_res.message() << "\n";
+      return 1;
+    }
+
+    void* handle = dlopen(dylib_path.c_str(), RTLD_NOW | RTLD_LOCAL);
+    if (handle == nullptr) {
+      std::cerr << "dlopen failed: " << dlerror() << "\n";
+      return 1;
+    }
+    using RunFn = int (*)(float*, int, float);
+    auto run_fn = reinterpret_cast<RunFn>(dlsym(handle, "run_scale_and_bias"));
+    if (run_fn == nullptr) {
+      std::cerr << "dlsym failed for run_scale_and_bias\n";
+      dlclose(handle);
+      return 1;
+    }
+
+    std::vector<float> values = {1.0f, 2.0f, 3.0f, 4.0f};
+    const int rc = run_fn(values.data(), static_cast<int>(values.size()), 0.5f);
+    dlclose(handle);
+    if (rc != 0) {
+      std::cerr << "run_scale_and_bias returned error: " << rc << "\n";
+      return 1;
+    }
+    for (std::size_t i = 0; i < values.size(); ++i) {
+      const float expected = static_cast<float>(i + 1) * 3.0f + 0.5f;
+      if (!muda::testing::AreClose(values[i], expected)) {
+        std::cerr << "mismatch at index " << i << ": got " << values[i] << ", expected " << expected
+                  << "\n";
+        return 1;
+      }
+    }
+  }
+
+  std::cout << "compiled and executed vector_add and multi-kernel shared library end-to-end\n";
   return 0;
 }

@@ -44,8 +44,7 @@ std::string ToHex64(std::uint64_t value) {
 
 void ScanIncludesRecursively(const std::filesystem::path& file_path,
                              const std::vector<std::filesystem::path>& include_dirs,
-                             std::unordered_set<std::string>& visited,
-                             std::uint64_t* inout_hash) {
+                             std::unordered_set<std::string>& visited, std::uint64_t* inout_hash) {
   std::ifstream stream(file_path);
   if (!stream) {
     return;
@@ -273,6 +272,87 @@ bool ArtifactCache::CopyCachedMetallibTo(std::string_view key,
   out.write(reinterpret_cast<const char*>(cached->data()),
             static_cast<std::streamsize>(cached->size()));
   return static_cast<bool>(out);
+}
+
+CacheStats ArtifactCache::Inspect() const noexcept {
+  CacheStats stats;
+  if (root_dir_.empty()) {
+    return stats;
+  }
+  std::error_code ec;
+  if (!std::filesystem::exists(root_dir_, ec) || !std::filesystem::is_directory(root_dir_, ec)) {
+    return stats;
+  }
+  for (const auto& entry : std::filesystem::directory_iterator(root_dir_, ec)) {
+    if (!entry.is_directory(ec)) {
+      continue;
+    }
+    const std::filesystem::path artifact_file = entry.path() / "artifact.metallib";
+    if (std::filesystem::is_regular_file(artifact_file, ec)) {
+      const std::uintmax_t file_size = std::filesystem::file_size(artifact_file, ec);
+      if (!ec) {
+        ++stats.entry_count;
+        stats.total_bytes += static_cast<std::uint64_t>(file_size);
+      }
+    }
+  }
+  return stats;
+}
+
+bool ArtifactCache::Clear() const noexcept {
+  if (root_dir_.empty()) {
+    return false;
+  }
+  std::error_code ec;
+  if (!std::filesystem::exists(root_dir_, ec)) {
+    return true;
+  }
+  std::filesystem::remove_all(root_dir_, ec);
+  if (ec) {
+    return false;
+  }
+  std::filesystem::create_directories(root_dir_, ec);
+  return !ec;
+}
+
+CacheVerifyReport ArtifactCache::Verify() const noexcept {
+  CacheVerifyReport report;
+  if (root_dir_.empty()) {
+    return report;
+  }
+  std::error_code ec;
+  if (!std::filesystem::exists(root_dir_, ec) || !std::filesystem::is_directory(root_dir_, ec)) {
+    return report;
+  }
+  for (const auto& entry : std::filesystem::directory_iterator(root_dir_, ec)) {
+    if (!entry.is_directory(ec)) {
+      continue;
+    }
+    const std::filesystem::path artifact_file = entry.path() / "artifact.metallib";
+    if (!std::filesystem::is_regular_file(artifact_file, ec)) {
+      std::filesystem::remove_all(entry.path(), ec);
+      ++report.corrupted_evicted;
+      continue;
+    }
+    std::ifstream file(artifact_file, std::ios::binary | std::ios::ate);
+    const std::streamoff size = file ? static_cast<std::streamoff>(file.tellg()) : 0;
+    bool valid = (size > 4);
+    if (valid) {
+      file.seekg(0, std::ios::beg);
+      std::array<char, 4> magic{};
+      file.read(magic.data(), 4);
+      valid = static_cast<bool>(file) && magic[0] == 'M' && magic[1] == 'T' && magic[2] == 'L' &&
+              magic[3] == 'B';
+    }
+    file.close();
+    if (valid) {
+      ++report.valid_entries;
+    } else {
+      std::filesystem::remove_all(entry.path(), ec);
+      ++report.corrupted_evicted;
+    }
+  }
+  return report;
 }
 
 }  // namespace muda::compiler

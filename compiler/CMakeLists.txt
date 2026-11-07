@@ -33,6 +33,7 @@ target_compile_definitions(
   PRIVATE
     MUDA_DEFAULT_RUNTIME_INCLUDE_DIR="${PROJECT_SOURCE_DIR}/runtime/include"
     MUDA_DEFAULT_RUNTIME_LIB_FILE="$<TARGET_FILE:muda_runtime>"
+    MUDA_DEFAULT_CUDA_DYLIB_FILE="$<TARGET_FILE:cuda>"
 )
 
 target_compile_features(muda_compiler PUBLIC cxx_std_20)
