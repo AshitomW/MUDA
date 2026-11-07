@@ -27,7 +27,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Emscripten toolchain
-        uses: mymind/setup-emsdk@v14
+        uses: emscripten-core/setup-emsdk@v16
         with:
           version: '3.1.64'
 
@@ -48,7 +48,8 @@ jobs:
       - name: Run headless Wasm translation smoke test
         run: |
           node -e '
-            const createModule = require("./web/dist/muda_compiler.js");
+            const m = require("./web/dist/muda_compiler.js");
+            const createModule = typeof m === "function" ? m : (m.createMudaModule || m.default);
             createModule().then(mod => {
               const res = mod.translateCuda("__global__ void test_add(const float* a, float* b) { b[0] = a[0]; }");
               if (!res.ok) {
