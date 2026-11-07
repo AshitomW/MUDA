@@ -39,8 +39,6 @@ class PlaygroundApp {
       inspectorContainer: document.getElementById("inspector-container"),
       diagnosticsContainer: document.getElementById("diagnostics-container"),
       statusBadge: document.getElementById("status-badge"),
-      statusLatency: document.getElementById("status-latency"),
-      statusEngine: document.getElementById("status-engine"),
       notification: document.getElementById("notification")
     };
 
@@ -165,49 +163,61 @@ class PlaygroundApp {
 
   async triggerCompile() {
     const code = this.editor.getValue();
-    this.el.statusBadge.textContent = "Compiling...";
-    this.el.statusBadge.className = "status-badge status-compiling";
+    if (this.el.statusBadge) {
+      this.el.statusBadge.textContent = "Compiling...";
+      this.el.statusBadge.className = "status-badge status-compiling";
+    }
 
-    const { elapsedMs, result, isWasm } = await this.compiler.compile(code, this.currentMode);
+    const { elapsedMs, result } = await this.compiler.compile(code, this.currentMode);
     this.lastResult = result;
 
-    this.el.statusEngine.textContent = isWasm ? "WebAssembly (Wasm)" : "Client Engine";
-    this.el.statusLatency.textContent = `${elapsedMs.toFixed(1)} ms`;
-
     if (result.ok) {
-      this.el.statusBadge.textContent = "Valid MSL";
-      this.el.statusBadge.className = "status-badge status-ok";
-      this.el.mslOutput.textContent = result.msl;
+      if (this.el.statusBadge) {
+        this.el.statusBadge.textContent = "Valid MSL";
+        this.el.statusBadge.className = "status-badge status-ok";
+      }
+      if (this.el.mslOutput) {
+        this.el.mslOutput.textContent = result.msl;
+      }
       this._updateMslLineNumbers(result.msl);
 
       this.inspector.render(result);
 
-      this.el.diagnosticsContainer.innerHTML = `
-        <div class="diag-banner diag-ok">
-          <div class="diag-icon">✓</div>
-          <div class="diag-body">
-            <strong>Translation Succeeded</strong>
-            <p>Generated clean Metal Shading Language for ${result.kernels.length} kernel(s) in ${elapsedMs.toFixed(2)} ms.</p>
+      if (this.el.diagnosticsContainer) {
+        this.el.diagnosticsContainer.innerHTML = `
+          <div class="diag-banner diag-ok">
+            <div class="diag-icon">✓</div>
+            <div class="diag-body">
+              <strong>Translation Succeeded</strong>
+              <p>Generated clean Metal Shading Language for ${result.kernels.length} kernel(s) in ${elapsedMs.toFixed(2)} ms.</p>
+            </div>
           </div>
-        </div>
-      `;
+        `;
+      }
     } else {
-      this.el.statusBadge.textContent = "Error";
-      this.el.statusBadge.className = "status-badge status-err";
-      this.el.mslOutput.textContent = result.msl || "// Compilation error occurred.\n// See Diagnostics tab.";
-      this._updateMslLineNumbers(this.el.mslOutput.textContent);
+      if (this.el.statusBadge) {
+        this.el.statusBadge.textContent = "Error";
+        this.el.statusBadge.className = "status-badge status-err";
+      }
+      const errText = result.msl || "// Compilation error occurred.\n// See Diagnostics tab.";
+      if (this.el.mslOutput) {
+        this.el.mslOutput.textContent = errText;
+      }
+      this._updateMslLineNumbers(errText);
 
       this.inspector.render(null);
 
-      this.el.diagnosticsContainer.innerHTML = `
-        <div class="diag-banner diag-error">
-          <div class="diag-icon">✕</div>
-          <div class="diag-body">
-            <strong>Translation Error [${result.diagnostic_id || "ERR"}]</strong>
-            <p class="diag-msg">${result.error || "Syntax or lowering error"}</p>
+      if (this.el.diagnosticsContainer) {
+        this.el.diagnosticsContainer.innerHTML = `
+          <div class="diag-banner diag-error">
+            <div class="diag-icon">✕</div>
+            <div class="diag-body">
+              <strong>Translation Error [${result.diagnostic_id || "ERR"}]</strong>
+              <p class="diag-msg">${result.error || "Syntax or lowering error"}</p>
+            </div>
           </div>
-        </div>
-      `;
+        `;
+      }
     }
   }
 
