@@ -146,7 +146,7 @@ enum class MetalStandard : std::uint8_t {
 /**
  * @brief Stable compiler and driver diagnostic codes (ALY-C* / ALY-I* / ALY-M* / ALY-T*).
  */
-enum class DiagnosticCode : std::uint16_t {
+enum class DiagnosticCode : std::uint8_t {
   kOk = 0,
   kMissingGlobalKernel,
   kMultipleKernelsUnsupported,

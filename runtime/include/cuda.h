@@ -6,32 +6,34 @@
 
 #pragma once
 
-#include <stddef.h>
-#include <stdint.h>
+#include <cstddef>
+#include <cstdint>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-typedef int CUdevice;
-typedef unsigned long long CUdeviceptr;
+using CUdevice = int;
+using CUdeviceptr = unsigned long long;
 
-typedef struct CUctx_st* CUcontext;
-typedef struct CUmod_st* CUmodule;
-typedef struct CUfunc_st* CUfunction;
-typedef struct CUstream_st* CUstream;
-typedef struct CUevent_st* CUevent;
-typedef struct CUarray_st* CUarray;
+using CUcontext = struct CUctx_st*;
+using CUmodule = struct CUmod_st*;
+using CUfunction = struct CUfunc_st*;
+using CUstream = struct CUstream_st*;
+using CUevent = struct CUevent_st*;
+using CUarray = struct CUarray_st*;
 
-typedef struct CUuuid_st {
+struct CUuuid {
   char bytes[16];
-} CUuuid;
+};
+using CUuuid_st = CUuuid;
 
-typedef struct CUipcMemHandle_st {
+struct CUipcMemHandle {
   char reserved[64];
-} CUipcMemHandle;
+};
+using CUipcMemHandle_st = CUipcMemHandle;
 
-typedef struct CUlinkState_st* CUlinkState;
+using CUlinkState = struct CUlinkState_st*;
 
 #ifdef __cplusplus
 #define CU_LAUNCH_PARAM_END (reinterpret_cast<void*>(0x00))
@@ -55,7 +57,7 @@ typedef struct CUlinkState_st* CUlinkState;
 #define CU_MEMHOSTALLOC_DEVICEMAP 0x02u
 #define CU_MEMHOSTALLOC_WRITECOMBINED 0x04u
 
-typedef enum cudaError_enum {
+enum cudaError_enum : std::uint16_t {
   CUDA_SUCCESS = 0,
   CUDA_ERROR_INVALID_VALUE = 1,
   CUDA_ERROR_OUT_OF_MEMORY = 2,
@@ -135,9 +137,10 @@ typedef enum cudaError_enum {
   CUDA_ERROR_TIMEOUT = 909,
   CUDA_ERROR_GRAPH_EXEC_UPDATE_FAILURE = 910,
   CUDA_ERROR_UNKNOWN = 999
-} CUresult;
+};
+using CUresult = cudaError_enum;
 
-typedef enum CUdevice_attribute_enum {
+enum CUdevice_attribute_enum : std::uint8_t {
   CU_DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK = 1,
   CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_X = 2,
   CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Y = 3,
@@ -193,9 +196,10 @@ typedef enum CUdevice_attribute_enum {
   CU_DEVICE_ATTRIBUTE_COOPERATIVE_LAUNCH = 95,
   CU_DEVICE_ATTRIBUTE_COOPERATIVE_MULTI_DEVICE_LAUNCH = 96,
   CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK_OPTIN = 97
-} CUdevice_attribute;
+};
+using CUdevice_attribute = CUdevice_attribute_enum;
 
-typedef enum CUpointer_attribute_enum {
+enum CUpointer_attribute_enum : std::uint8_t {
   CU_POINTER_ATTRIBUTE_CONTEXT = 1,
   CU_POINTER_ATTRIBUTE_MEMORY_TYPE = 2,
   CU_POINTER_ATTRIBUTE_DEVICE_POINTER = 3,
@@ -213,9 +217,10 @@ typedef enum CUpointer_attribute_enum {
   CU_POINTER_ATTRIBUTE_IS_GPU_DIRECT_RDMA_CAPABLE = 15,
   CU_POINTER_ATTRIBUTE_ACCESS_FLAGS = 16,
   CU_POINTER_ATTRIBUTE_MEMPOOL_HANDLE = 17
-} CUpointer_attribute;
+};
+using CUpointer_attribute = CUpointer_attribute_enum;
 
-typedef enum CUfunction_attribute_enum {
+enum CUfunction_attribute_enum : std::uint8_t {
   CU_FUNC_ATTRIBUTE_MAX_THREADS_PER_BLOCK = 0,
   CU_FUNC_ATTRIBUTE_SHARED_SIZE_BYTES = 1,
   CU_FUNC_ATTRIBUTE_CONST_SIZE_BYTES = 2,
@@ -227,9 +232,10 @@ typedef enum CUfunction_attribute_enum {
   CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES = 8,
   CU_FUNC_ATTRIBUTE_PREFERRED_SHARED_MEMORY_CARVEOUT = 9,
   CU_FUNC_ATTRIBUTE_MAX = 10
-} CUfunction_attribute;
+};
+using CUfunction_attribute = CUfunction_attribute_enum;
 
-typedef enum CUjit_option_enum {
+enum CUjit_option_enum : std::uint8_t {
   CU_JIT_MAX_REGISTERS = 0,
   CU_JIT_THREADS_PER_BLOCK = 1,
   CU_JIT_WALL_TIME = 2,
@@ -245,31 +251,35 @@ typedef enum CUjit_option_enum {
   CU_JIT_LOG_VERBOSE = 12,
   CU_JIT_GENERATE_LINE_INFO = 13,
   CU_JIT_CACHE_MODE = 14
-} CUjit_option;
+};
+using CUjit_option = CUjit_option_enum;
 
-typedef enum CUjitInputType_enum {
+enum CUjitInputType_enum : std::uint8_t {
   CU_JIT_INPUT_CUBIN = 0,
   CU_JIT_INPUT_PTX = 1,
   CU_JIT_INPUT_FATBINARY = 2,
   CU_JIT_INPUT_OBJECT = 3,
   CU_JIT_INPUT_LIBRARY = 4,
   CU_JIT_NUM_INPUT_TYPES = 5
-} CUjitInputType;
+};
+using CUjitInputType = CUjitInputType_enum;
 
-typedef enum CUfunc_cache_enum {
+enum CUfunc_cache_enum : std::uint8_t {
   CU_FUNC_CACHE_PREFER_NONE = 0,
   CU_FUNC_CACHE_PREFER_SHARED = 1,
   CU_FUNC_CACHE_PREFER_L1 = 2,
   CU_FUNC_CACHE_PREFER_EQUAL = 3
-} CUfunc_cache;
+};
+using CUfunc_cache = CUfunc_cache_enum;
 
-typedef enum CUsharedconfig_enum {
+enum CUsharedconfig_enum : std::uint8_t {
   CU_SHARED_MEM_CONFIG_DEFAULT_BANK_SIZE = 0,
   CU_SHARED_MEM_CONFIG_FOUR_BYTE_BANK_SIZE = 1,
   CU_SHARED_MEM_CONFIG_EIGHT_BYTE_BANK_SIZE = 2
-} CUsharedconfig;
+};
+using CUsharedconfig = CUsharedconfig_enum;
 
-typedef struct CUDA_MEMCPY2D_st {
+struct CUDA_MEMCPY2D {
   size_t srcXInBytes;
   size_t srcY;
   int srcMemoryType;
@@ -288,10 +298,11 @@ typedef struct CUDA_MEMCPY2D_st {
 
   size_t WidthInBytes;
   size_t Height;
-} CUDA_MEMCPY2D;
+};
+using CUDA_MEMCPY2D_st = CUDA_MEMCPY2D;
 
-typedef void (*CUstreamCallback)(CUstream hStream, CUresult status, void* userData);
-typedef size_t (*CUoccupancyB2DSize)(int blockSize);
+using CUstreamCallback = void (*)(CUstream hStream, CUresult status, void* userData);
+using CUoccupancyB2DSize = size_t (*)(int blockSize);
 
 /* Initialization and Device Management */
 CUresult cuInit(unsigned int Flags);

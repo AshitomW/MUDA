@@ -6,7 +6,8 @@
 
 #pragma once
 
-#include <stddef.h>
+#include <cstddef>
+#include <cstdint>
 
 #ifdef __cplusplus
 extern "C" {
@@ -50,7 +51,7 @@ extern "C" {
 /**
  * @brief CUDA runtime error codes.
  */
-typedef enum cudaError {
+enum cudaError : std::uint16_t {
   cudaSuccess = 0,
   cudaErrorInvalidValue = 1,
   cudaErrorMemoryAllocation = 2,
@@ -72,43 +73,44 @@ typedef enum cudaError {
   cudaErrorUnsupportedLimit = 802,
   cudaErrorInternalError = 998,
   cudaErrorUnknown = 999
-} cudaError_t;
+};
+using cudaError_t = cudaError;
 
 /**
  * @brief CUDA memory copy direction specifiers.
  */
-typedef enum cudaMemcpyKind {
+enum cudaMemcpyKind : std::uint8_t {
   cudaMemcpyHostToHost = 0,
   cudaMemcpyHostToDevice = 1,
   cudaMemcpyDeviceToHost = 2,
   cudaMemcpyDeviceToDevice = 3,
   cudaMemcpyDefault = 4
-} cudaMemcpyKind;
+};
 
 /**
  * @brief CUDA memory space type classification.
  */
-typedef enum cudaMemoryType {
+enum cudaMemoryType : std::uint8_t {
   cudaMemoryTypeUnregistered = 0,
   cudaMemoryTypeHost = 1,
   cudaMemoryTypeDevice = 2,
   cudaMemoryTypeManaged = 3
-} cudaMemoryType;
+};
 
 /**
  * @brief CUDA compute mode.
  */
-typedef enum cudaComputeMode {
+enum cudaComputeMode : std::uint8_t {
   cudaComputeModeDefault = 0,
   cudaComputeModeExclusive = 1,
   cudaComputeModeProhibited = 2,
   cudaComputeModeExclusiveProcess = 3
-} cudaComputeMode;
+};
 
 /**
  * @brief CUDA device attribute query identifiers.
  */
-typedef enum cudaDeviceAttr {
+enum cudaDeviceAttr : std::uint8_t {
   cudaDevAttrMaxThreadsPerBlock = 1,
   cudaDevAttrMaxBlockDimX = 2,
   cudaDevAttrMaxBlockDimY = 3,
@@ -132,12 +134,12 @@ typedef enum cudaDeviceAttr {
   cudaDevAttrPageableMemoryAccess = 88,
   cudaDevAttrConcurrentManagedAccess = 89,
   cudaDevAttrMaxSharedMemoryPerBlockOptin = 97
-} cudaDeviceAttr;
+};
 
 /**
  * @brief Synthesized CUDA device properties.
  */
-typedef struct cudaDeviceProp {
+struct cudaDeviceProp {
   char name[256];
   size_t totalGlobalMem;
   size_t sharedMemPerBlock;
@@ -166,22 +168,22 @@ typedef struct cudaDeviceProp {
   int pageableMemoryAccess;
   size_t sharedMemPerMultiprocessor;
   size_t sharedMemPerBlockOptin;
-} cudaDeviceProp;
+};
 
 /**
  * @brief Pointer attributes returned by cudaPointerGetAttributes.
  */
-typedef struct cudaPointerAttributes {
+struct cudaPointerAttributes {
   cudaMemoryType type;
   int device;
   void* devicePointer;
   void* hostPointer;
-} cudaPointerAttributes;
+};
 
 /**
  * @brief Three-dimensional grid or thread-block extent.
  */
-typedef struct dim3 {
+struct dim3 {
   unsigned int x;
   unsigned int y;
   unsigned int z;
@@ -189,46 +191,46 @@ typedef struct dim3 {
   constexpr dim3(unsigned int vx = 1, unsigned int vy = 1, unsigned int vz = 1)
       : x(vx), y(vy), z(vz) {}
 #endif
-} dim3;
+};
 
-typedef struct __half {
+struct __half {
   unsigned short x;
-} __half;
-typedef __half half;
+};
+using half = __half;
 
-typedef struct __half2 {
+struct __half2 {
   __half x;
   __half y;
-} __half2;
-typedef __half2 half2;
+};
+using half2 = __half2;
 
-typedef struct float2 {
+struct float2 {
   float x, y;
-} float2;
-typedef struct float3 {
+};
+struct float3 {
   float x, y, z;
-} float3;
-typedef struct float4 {
+};
+struct float4 {
   float x, y, z, w;
-} float4;
-typedef struct int2 {
+};
+struct int2 {
   int x, y;
-} int2;
-typedef struct int3 {
+};
+struct int3 {
   int x, y, z;
-} int3;
-typedef struct int4 {
+};
+struct int4 {
   int x, y, z, w;
-} int4;
-typedef struct uint2 {
+};
+struct uint2 {
   unsigned int x, y;
-} uint2;
-typedef struct uint3 {
+};
+struct uint3 {
   unsigned int x, y, z;
-} uint3;
-typedef struct uint4 {
+};
+struct uint4 {
   unsigned int x, y, z, w;
-} uint4;
+};
 
 static inline float2 make_float2(float x, float y) {
   float2 v;
@@ -297,28 +299,25 @@ static inline uint4 make_uint4(unsigned int x, unsigned int y, unsigned int z, u
 /**
  * @brief Opaque CUDA stream handle.
  */
-typedef struct CUstream_st* cudaStream_t;
+using cudaStream_t = struct CUstream_st*;
 
 /**
  * @brief Opaque CUDA event handle.
  */
-typedef struct CUevent_st* cudaEvent_t;
+using cudaEvent_t = struct CUevent_st*;
 
 /**
  * @brief Parameter binding kind for registered MUDA kernels.
  */
-typedef enum mudaKernelParamKind {
-  mudaKernelParamBuffer = 0,
-  mudaKernelParamBytes = 1
-} mudaKernelParamKind;
+enum mudaKernelParamKind : std::uint8_t { mudaKernelParamBuffer = 0, mudaKernelParamBytes = 1 };
 
 /**
  * @brief Metadata for a single kernel parameter binding.
  */
-typedef struct mudaKernelParamDesc {
+struct mudaKernelParamDesc {
   mudaKernelParamKind kind;
   size_t size;
-} mudaKernelParamDesc;
+};
 
 /* Device and Version Management */
 cudaError_t cudaGetDeviceCount(int* count);

@@ -5,8 +5,8 @@
 
 #pragma once
 
-#include <stddef.h>
-#include <stdint.h>
+#include <cstddef>
+#include <cstdint>
 
 #include "cuda_runtime.h"
 
@@ -17,13 +17,13 @@ extern "C" {
 /**
  * @brief Transform direction constants matching standard cuFFT semantics.
  */
-#define CUFFT_FORWARD -1
-#define CUFFT_INVERSE 1
+#define CUFFT_FORWARD (-1)
+#define CUFFT_INVERSE (1)
 
 /**
  * @brief cuFFT status return codes.
  */
-typedef enum cufftResult_t {
+enum cufftResult_t : std::uint8_t {
   CUFFT_SUCCESS = 0,
   CUFFT_INVALID_PLAN = 1,
   CUFFT_ALLOC_FAILED = 2,
@@ -40,42 +40,42 @@ typedef enum cufftResult_t {
   CUFFT_NO_WORKSPACE = 13,
   CUFFT_NOT_IMPLEMENTED = 14,
   CUFFT_NOT_SUPPORTED = 16
-} cufftResult;
+};
+using cufftResult = cufftResult_t;
 
 /**
  * @brief cuFFT transform data types.
  */
-typedef enum cufftType_t {
+enum cufftType_t : std::uint8_t {
   CUFFT_R2C = 0x2a,
   CUFFT_C2R = 0x2c,
   CUFFT_C2C = 0x29,
   CUFFT_D2Z = 0x6a,
   CUFFT_Z2D = 0x6c,
   CUFFT_Z2Z = 0x69
-} cufftType;
+};
+using cufftType = cufftType_t;
 
 /**
  * @brief Single-precision real and complex types.
  */
-typedef float cufftReal;
-typedef float2 cufftComplex;
+using cufftReal = float;
+using cufftComplex = float2;
 
 /**
  * @brief Opaque cuFFT plan handle (pointer-sized or integer-compatible token).
  */
-typedef struct cufftContext* cufftHandle;
+using cufftHandle = struct cufftContext*;
 
 /* Plan Lifecycle & Configuration */
 cufftResult cufftCreate(cufftHandle* handle);
 cufftResult cufftPlan1d(cufftHandle* plan, int nx, cufftType type, int batch);
 cufftResult cufftPlan2d(cufftHandle* plan, int nx, int ny, cufftType type);
 cufftResult cufftPlan3d(cufftHandle* plan, int nx, int ny, int nz, cufftType type);
-cufftResult cufftPlanMany(cufftHandle* plan, int rank, int* n, int* inembed, int istride,
-                          int idist, int* onembed, int ostride, int odist, cufftType type,
-                          int batch);
+cufftResult cufftPlanMany(cufftHandle* plan, int rank, int* n, int* inembed, int istride, int idist,
+                          int* onembed, int ostride, int odist, cufftType type, int batch);
 
-cufftResult cufftMakePlan1d(cufftHandle plan, int nx, cufftType type, int batch,
-                            size_t* workSize);
+cufftResult cufftMakePlan1d(cufftHandle plan, int nx, cufftType type, int batch, size_t* workSize);
 cufftResult cufftMakePlan2d(cufftHandle plan, int nx, int ny, cufftType type, size_t* workSize);
 cufftResult cufftMakePlan3d(cufftHandle plan, int nx, int ny, int nz, cufftType type,
                             size_t* workSize);
@@ -95,4 +95,3 @@ cufftResult cufftExecC2R(cufftHandle plan, cufftComplex* idata, cufftReal* odata
 #ifdef __cplusplus
 }  // extern "C"
 #endif
-

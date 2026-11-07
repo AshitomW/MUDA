@@ -5,7 +5,8 @@
 
 #pragma once
 
-#include <stddef.h>
+#include <cstddef>
+#include <cstdint>
 
 #ifdef __cplusplus
 extern "C" {
@@ -14,7 +15,7 @@ extern "C" {
 /**
  * @brief NVRTC status codes.
  */
-typedef enum nvrtcResult {
+enum nvrtcResult : std::uint8_t {
   NVRTC_SUCCESS = 0,
   NVRTC_ERROR_OUT_OF_MEMORY = 1,
   NVRTC_ERROR_PROGRAM_CREATION_FAILURE = 2,
@@ -27,12 +28,12 @@ typedef enum nvrtcResult {
   NVRTC_ERROR_NO_LOWERED_NAMES_BEFORE_COMPILATION = 9,
   NVRTC_ERROR_NAME_EXPRESSION_NOT_VALID = 10,
   NVRTC_ERROR_INTERNAL_ERROR = 11
-} nvrtcResult;
+};
 
 /**
  * @brief Opaque NVRTC program handle.
  */
-typedef struct _nvrtcProgram* nvrtcProgram;
+using nvrtcProgram = struct _nvrtcProgram*;
 
 /**
  * @brief Returns a human-readable description string for an nvrtcResult status code.

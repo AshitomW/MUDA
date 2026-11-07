@@ -5,8 +5,8 @@
 
 #pragma once
 
-#include <stddef.h>
-#include <stdint.h>
+#include <cstddef>
+#include <cstdint>
 
 #include "cuda_runtime.h"
 
@@ -17,7 +17,7 @@ extern "C" {
 /**
  * @brief cuSPARSE status return codes.
  */
-typedef enum cusparseStatus_t {
+enum cusparseStatus_t : std::uint8_t {
   CUSPARSE_STATUS_SUCCESS = 0,
   CUSPARSE_STATUS_NOT_INITIALIZED = 1,
   CUSPARSE_STATUS_ALLOC_FAILED = 2,
@@ -30,63 +30,60 @@ typedef enum cusparseStatus_t {
   CUSPARSE_STATUS_ZERO_PIVOT = 9,
   CUSPARSE_STATUS_NOT_SUPPORTED = 10,
   CUSPARSE_STATUS_INSUFFICIENT_RESOURCES = 11
-} cusparseStatus_t;
+};
 
 /**
  * @brief Sparse matrix transpose operation specifiers.
  */
-typedef enum cusparseOperation_t {
+enum cusparseOperation_t : std::uint8_t {
   CUSPARSE_OPERATION_NON_TRANSPOSE = 0,
   CUSPARSE_OPERATION_TRANSPOSE = 1,
   CUSPARSE_OPERATION_CONJUGATE_TRANSPOSE = 2
-} cusparseOperation_t;
+};
 
 /**
  * @brief Sparse index integer width specifiers.
  */
-typedef enum cusparseIndexType_t {
+enum cusparseIndexType_t : std::uint8_t {
   CUSPARSE_INDEX_16U = 1,
   CUSPARSE_INDEX_32I = 2,
   CUSPARSE_INDEX_64I = 3
-} cusparseIndexType_t;
+};
 
 /**
  * @brief Sparse index base (0-based C vs. 1-based Fortran).
  */
-typedef enum cusparseIndexBase_t {
+enum cusparseIndexBase_t : std::uint8_t {
   CUSPARSE_INDEX_BASE_ZERO = 0,
   CUSPARSE_INDEX_BASE_ONE = 1
-} cusparseIndexBase_t;
+};
 
 /**
  * @brief Dense matrix storage order.
  */
-typedef enum cusparseOrder_t {
-  CUSPARSE_ORDER_COL = 1,
-  CUSPARSE_ORDER_ROW = 2
-} cusparseOrder_t;
+enum cusparseOrder_t : std::uint8_t { CUSPARSE_ORDER_COL = 1, CUSPARSE_ORDER_ROW = 2 };
 
 /**
  * @brief SpMV algorithm selectors.
  */
-typedef enum cusparseSpMVAlg_t {
+enum cusparseSpMVAlg_t : std::uint8_t {
   CUSPARSE_SPMV_ALG_DEFAULT = 0,
   CUSPARSE_SPMV_CSR_ALG1 = 2,
   CUSPARSE_SPMV_CSR_ALG2 = 3
-} cusparseSpMVAlg_t;
+};
 
 /**
  * @brief SpMM algorithm selectors.
  */
-typedef enum cusparseSpMMAlg_t {
+enum cusparseSpMMAlg_t : std::uint8_t {
   CUSPARSE_SPMM_ALG_DEFAULT = 0,
   CUSPARSE_SPMM_CSR_ALG1 = 1,
   CUSPARSE_SPMM_CSR_ALG2 = 2
-} cusparseSpMMAlg_t;
+};
 
 #ifndef MUDA_CUDA_DATA_TYPE_DEFINED
 #define MUDA_CUDA_DATA_TYPE_DEFINED
-typedef enum cudaDataType_t {
+enum cudaDataType_t : std::uint8_t {
   CUDA_R_16F = 2,
   CUDA_C_16F = 6,
   CUDA_R_32F = 0,
@@ -95,17 +92,17 @@ typedef enum cudaDataType_t {
   CUDA_C_64F = 5,
   CUDA_R_8I = 3,
   CUDA_R_32I = 10
-} cudaDataType_t;
-typedef cudaDataType_t cudaDataType;
+};
+using cudaDataType = cudaDataType_t;
 #endif
 
 /**
  * @brief Opaque cuSPARSE context and generic API descriptors.
  */
-typedef struct cusparseContext* cusparseHandle_t;
-typedef struct cusparseSpMatDescr* cusparseSpMatDescr_t;
-typedef struct cusparseDnVecDescr* cusparseDnVecDescr_t;
-typedef struct cusparseDnMatDescr* cusparseDnMatDescr_t;
+using cusparseHandle_t = struct cusparseContext*;
+using cusparseSpMatDescr_t = struct cusparseSpMatDescr*;
+using cusparseDnVecDescr_t = struct cusparseDnVecDescr*;
+using cusparseDnMatDescr_t = struct cusparseDnMatDescr*;
 
 /* Context & Version */
 cusparseStatus_t cusparseCreate(cusparseHandle_t* handle);
@@ -142,9 +139,8 @@ cusparseStatus_t cusparseSpMV_bufferSize(cusparseHandle_t handle, cusparseOperat
 
 cusparseStatus_t cusparseSpMV(cusparseHandle_t handle, cusparseOperation_t opA, const void* alpha,
                               cusparseSpMatDescr_t matA, cusparseDnVecDescr_t vecX,
-                              const void* beta, cusparseDnVecDescr_t vecY,
-                              cudaDataType computeType, cusparseSpMVAlg_t alg,
-                              void* externalBuffer);
+                              const void* beta, cusparseDnVecDescr_t vecY, cudaDataType computeType,
+                              cusparseSpMVAlg_t alg, void* externalBuffer);
 
 cusparseStatus_t cusparseSpMM_bufferSize(cusparseHandle_t handle, cusparseOperation_t opA,
                                          cusparseOperation_t opB, const void* alpha,
@@ -154,13 +150,11 @@ cusparseStatus_t cusparseSpMM_bufferSize(cusparseHandle_t handle, cusparseOperat
                                          size_t* bufferSize);
 
 cusparseStatus_t cusparseSpMM(cusparseHandle_t handle, cusparseOperation_t opA,
-                              cusparseOperation_t opB, const void* alpha,
-                              cusparseSpMatDescr_t matA, cusparseDnMatDescr_t matB,
-                              const void* beta, cusparseDnMatDescr_t matC,
-                              cudaDataType computeType, cusparseSpMMAlg_t alg,
-                              void* externalBuffer);
+                              cusparseOperation_t opB, const void* alpha, cusparseSpMatDescr_t matA,
+                              cusparseDnMatDescr_t matB, const void* beta,
+                              cusparseDnMatDescr_t matC, cudaDataType computeType,
+                              cusparseSpMMAlg_t alg, void* externalBuffer);
 
 #ifdef __cplusplus
 }  // extern "C"
 #endif
-
