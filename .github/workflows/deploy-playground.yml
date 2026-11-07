@@ -1,0 +1,72 @@
+name: Deploy muda playground
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'compiler/**'
+      - 'web/**'
+      - '.github/workflows/deploy-playground.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: 'pages'
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Emscripten toolchain
+        uses: mymind/setup-emsdk@v14
+        with:
+          version: '3.1.64'
+
+      - name: Verify Emscripten installation
+        run: |
+          emcc --version
+
+      - name: Build WebAssembly compiler engine
+        run: |
+          bash web/wasm/build_wasm.sh
+
+      - name: Verify Wasm build artifacts
+        run: |
+          ls -lh web/dist/muda_compiler.js web/dist/muda_compiler.wasm
+          test -f web/dist/muda_compiler.js
+          test -f web/dist/muda_compiler.wasm
+
+      - name: Run headless Wasm translation smoke test
+        run: |
+          node -e '
+            const createModule = require("./web/dist/muda_compiler.js");
+            createModule().then(mod => {
+              const res = mod.translateCuda("__global__ void test_add(const float* a, float* b) { b[0] = a[0]; }");
+              if (!res.ok) {
+                console.error("Wasm translation failed:", res.error);
+                process.exit(1);
+              }
+              console.log("Smoke test passed! Generated MSL length:", res.msl.length);
+            });
+          '
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: 'web/'
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

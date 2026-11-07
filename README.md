@@ -139,7 +139,7 @@ Clone the repository and configure using CMake Presets:
 
 ```bash
 # Clone the repository
-git clone https://github.com/AshitomW/cuda-metal.git
+git clone https://github.com/AshitomW/MUDA.git
 cd cuda-metal
 
 # Configure Release build with Ninja

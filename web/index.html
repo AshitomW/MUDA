@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>muda playground</title>
+  <meta name="description" content="muda compiler playground — compile cuda c++ and ptx to metal shading language via webassembly.">
+  <link rel="stylesheet" href="styles/main.css">
+  <link rel="stylesheet" href="styles/components.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>">
+</head>
+<body>
+
+  <!-- Top Navigation Header -->
+  <header class="app-header">
+    <div class="brand">
+      <div class="logo-badge">muda</div>
+      <div>
+        <span class="brand-title">muda playground</span>
+        <span class="brand-subtitle">cuda &amp; ptx to metal</span>
+      </div>
+    </div>
+
+    <div class="header-controls">
+      <div class="control-group">
+        <label for="mode-selector" class="control-label">Target:</label>
+        <select id="mode-selector" class="select-input">
+          <option value="cuda">CUDA C++ (.cu)</option>
+          <option value="ptx">PTX Assembly (.ptx)</option>
+        </select>
+      </div>
+
+      <div class="control-group">
+        <label for="sample-selector" class="control-label">Kernel:</label>
+        <select id="sample-selector" class="select-input">
+          <!-- Populated by JavaScript -->
+        </select>
+      </div>
+    </div>
+
+    <div class="header-actions">
+      <button id="btn-copy" class="btn btn-secondary" title="Copy generated Metal Shading Language to clipboard">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+        Copy MSL
+      </button>
+
+      <button id="btn-download" class="btn btn-secondary" title="Download .metal source file">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        Download
+      </button>
+
+      <button id="btn-share" class="btn btn-secondary" title="Copy shareable link with current code in URL hash">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+        Share
+      </button>
+
+      <a href="https://github.com/AshitomW/MUDA" target="_blank" rel="noopener noreferrer" class="github-link" title="muda on GitHub">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+      </a>
+    </div>
+  </header>
+
+  <!-- Main Split Workspace -->
+  <main class="workspace">
+    <!-- Left Panel: Input Editor -->
+    <section class="panel panel-left">
+      <div class="panel-header">
+        <div class="panel-title">
+          <span>Source Input</span>
+          <span class="lang-tag" id="input-lang-tag">CUDA C++</span>
+        </div>
+        <span class="text-muted" style="font-size: 11px;">Auto-compiles as you type</span>
+      </div>
+
+      <div class="editor-container">
+        <div class="line-numbers" id="line-numbers">1</div>
+        <textarea id="editor-input" class="code-textarea" spellcheck="false" placeholder="Write or paste your CUDA C++ or PTX kernel here..."></textarea>
+      </div>
+    </section>
+
+    <!-- Right Panel: Output & Inspector -->
+    <section class="panel panel-right">
+      <div class="panel-header">
+        <nav class="tabs">
+          <button class="tab-btn active" data-tab="msl">Metal Shading Language (MSL)</button>
+          <button class="tab-btn" data-tab="inspector">Kernel Bindings & Reflection</button>
+          <button class="tab-btn" data-tab="diagnostics">Diagnostics & Log</button>
+        </nav>
+      </div>
+
+      <div class="tab-content">
+        <!-- Tab 1: MSL Output -->
+        <div id="tab-msl" class="tab-pane active">
+          <div class="msl-viewer">
+            <div class="line-numbers" id="msl-line-numbers">1</div>
+            <pre class="msl-code"><code id="msl-output">// Compiling...</code></pre>
+          </div>
+        </div>
+
+        <!-- Tab 2: Kernel Reflection Inspector -->
+        <div id="tab-inspector" class="tab-pane">
+          <div class="inspector-view" id="inspector-container">
+            <!-- Populated by JavaScript -->
+          </div>
+        </div>
+
+        <!-- Tab 3: Diagnostics & IR -->
+        <div id="tab-diagnostics" class="tab-pane">
+          <div class="diagnostics-view" id="diagnostics-container">
+            <!-- Populated by JavaScript -->
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Bottom Status Bar -->
+  <footer class="app-footer">
+    <div class="footer-left">
+      <span id="status-badge" class="status-badge status-ok">Ready</span>
+    </div>
+    <div class="footer-right">
+      <span style="opacity: 0.6;">Cmd+Enter to compile</span>
+    </div>
+  </footer>
+
+  <!-- Notification Toast -->
+  <div id="notification" class="toast">Action completed</div>
+
+  <!-- Entry Script -->
+  <script type="module" src="src/app.js"></script>
+</body>
+</html>
