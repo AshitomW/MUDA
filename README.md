@@ -1,122 +1,117 @@
 # MUDA: CUDA-to-Metal Compatibility Layer for Apple Silicon
 
-MUDA is an experimental, clean-room CUDA-to-Metal translation engine and runtime compatibility layer designed to run CUDA programs and PTX assembly directly on Apple Silicon GPUs without an NVIDIA GPU.
+MUDA is an experimental, clean-room CUDA-to-Metal translation engine and runtime compatibility layer that allows CUDA C++ kernels and PTX assembly to run directly on Apple Silicon GPUs without an NVIDIA graphics card.
+
+It works by translating CUDA source code and PTX assembly into Metal Shading Language (MSL), managing memory and compute dispatches through Apple's Metal framework, and providing drop-in library shims for standard CUDA driver, runtime, and math APIs.
 
 > [!NOTE]
-> **Project Scope & Maturity**: MUDA is an active engineering project implementing a focused, verified subset of CUDA and PTX. It is **not** a 100% complete drop-in replacement for the full NVIDIA CUDA Toolkit or precompiled binary SASS. Existing CUDA code relying on unsupported features (e.g. device-side dynamic parallelism, function pointers, or proprietary hardware libraries) will require adjustment or emit explicit rejection diagnostics.
+> **Project Scope & Realistic Expectations**: MUDA is an independent, clean-room implementation of a focused, compute-oriented subset of CUDA. It is designed for developers who want to run custom compute kernels, machine learning operations, and workflows from tools like PyTorch and Numba on Apple Silicon.
+> 
+> It is **not** a 100% clone of the full NVIDIA CUDA Toolkit, nor can it execute precompiled NVIDIA machine code (`.cubin` SASS binaries). Code using unsupported features (such as device-side dynamic parallelism, function pointers, or graphics interop) will require modification or will emit compile-time diagnostics.
 
 ---
 
-## Why It Exists
+## Why MUDA?
 
-Apple Silicon GPUs do not natively execute CUDA code, PTX, or NVIDIA SASS machine instructions. CUDA applications are tailored to NVIDIA's compilation pipeline, memory architecture, and driver model:
-- **Missing Toolchain on macOS:** macOS lacks `nvcc`, the NVIDIA CUDA Toolkit, and `libcuda.so` / `libcudart.so`.
-- **Architectural Disparities:** Metal Shading Language (MSL) has different memory models, no support for `goto` or labeled jump targets, and distinct threadgroup execution semantics.
-- **Dynamic Workflows:** Frameworks like Python Numba (`@cuda.jit`) generate PTX in-memory at runtime and load it dynamically through the CUDA Driver API.
+Apple Silicon Macs feature unified memory architectures and capable GPUs, but they speak Metal rather than CUDA:
 
-MUDA bridges this gap by translating source and PTX into Metal, providing runtime shims for `libcudart` and `libcuda`, and rejecting unsupported patterns with clear diagnostics.
+1. **No Native CUDA Toolchain on macOS:** macOS lacks `nvcc`, the NVIDIA CUDA Driver, and runtime libraries (`libcudart`, `libcuda`).
+2. **Architectural Differences:** Metal Shading Language (MSL) has distinct execution models, memory spaces, and threadgroup synchronization semantics. Notably, MSL disallows arbitrary `goto` jumps and labeled control flow.
+3. **Dynamic JIT Workflows:** Many Python packages (such as Numba's `@cuda.jit`) generate PTX virtual assembly on the fly in memory and load it via the CUDA Driver API.
+
+MUDA bridges these differences by translating CUDA C++ and PTX into MSL, providing compatible runtime shims, and mapping CUDA concepts cleanly onto Apple's Metal API.
 
 ---
 
-## Current Status & Capabilities
+## What Is Implemented Today
 
-```
-+-----------------------------------------------------------------------------------+
-|                                 User Applications                                 |
-|          CUDA C++ (.cu) Sources           |        Numba / Python @cuda.jit       |
-+-------------------------------------------+---------------------------------------+
-                     |                                          |
-                     v                                          v
-+-------------------------------------------+---------------------------------------+
-|              mudac Compiler               |            libcuda.dylib              |
-|   AST Rewriter -> MMIR -> MSL / Metallib  |    cuInit, cuCtx*, cuMem*, cuLaunch*  |
-+-------------------------------------------+---------------------------------------+
-                     |                                          |
-                     +--------------------+---------------------+
-                                          |
-                                          v
-+-----------------------------------------------------------------------------------+
-|                                  MUDA Core Engine                                 |
-|  - PTX Translation (Arena, Table-Driven Parser, CFG Structurizer, In-Memory JIT)  |
-|  - Runtime Subsystems (BufferPool, MemoryManager, StreamManager, LaunchEngine)    |
-|  - Metal Backend (MTLDevice, MTLCommandQueue, MTLSharedEvent, Metal Shading Lang) |
-+-----------------------------------------------------------------------------------+
-```
+### 1. Compiler Toolchain (`mudac` & `nvcc`)
+- **Compilation Frontends:** Compiles CUDA C++ (`.cu`) and PTX assembly (`.ptx`) into native macOS executables, shared libraries (`-shared` / `-dynamiclib`), object files (`-c`), Metal Shading Language (`-S`), or precompiled Metal libraries (`--emit-metallib`).
+- **`nvcc` Compatibility Wrapper:** Translates standard `nvcc` flags (`-shared`, `-fPIC`, `-D`, `-U`, `-I`, `-L`, `-l`, `-Xcompiler`, `-Xlinker`, `-gencode`, `-arch`, `--expt-relaxed-constexpr`) so standard build tools (CMake, `setuptools`, PyTorch) can use MUDA as a drop-in compiler.
+- **Muda Metal Intermediate Representation (MMIR):** Validates kernel signatures, parameter bindings, access qualifiers, and shared memory allocations before emitting MSL.
+- **Content-Addressed Build Cache:** Avoids redundant recompilation by caching artifacts based on source hashes, macro states, and compiler flags.
+- **Standard `CUDA_HOME` Layout:** Builds a familiar directory structure (`bin/`, `include/`, `lib/`) containing `nvcc`, `mudac`, clean-room headers, and library symlinks.
 
-### 1. What Is Working Today
+### 2. PTX Translation Engine
+- **Fast Table-Driven Parser:** Pure C++ arena-allocated lexer and shift-reduce parser supporting PTX 6.x and 7.x instruction sets.
+- **Relooper CFG Structurizer:** Analyzes basic blocks and transforms arbitrary branch targets into structured Metal loops and `if`/`else` control flow, with an emulated state-machine dispatcher fallback for irreducible loops.
+- **In-Memory JIT Compilation:** Translates PTX strings into Metal compute pipelines in-process via `cuModuleLoadData` in milliseconds, without spawning subprocesses or writing temporary files to disk.
 
-#### Compiler (`mudac` & `nvcc`)
-- **Compilation Targets:** Compiles `.cu` and `.ptx` files into native macOS executables, shared libraries (`-shared` / `-dynamiclib`), object files (`-c`), Metal Shading Language (`-S`), or `.metallib` (`--emit-metallib`).
-- **`nvcc` Compatibility Wrapper:** Supports `-shared`, `-fPIC`, `-D`, `-U`, `-Xcompiler`, `-Xlinker`, `-gencode`, `-arch`, `--expt-relaxed-constexpr`, and `--muda-print-metadata`.
-- **Intermediate Representation (MMIR):** Validates kernel signatures, parameter bindings, access qualifiers, and shared memory allocations.
-- **Content-Addressed Cache v2:** Eliminates redundant recompilations via content hashing, dependency closure tracking, and fast-math flags (`~/.cache/muda/v1`), inspectable and verifiable via `muda cache <info|clear|verify>`.
-- **Diagnostics (`ALY-*`):** Generates deterministic diagnostic errors and source maps when unsupported constructs are detected.
-
-#### Acceleration Libraries & Runtime Compilation (`libcublas`, `libcufft`, `libcudnn`, `libcusparse`, `libnvrtc`)
-- **cuBLAS (`libcublas.dylib`):** Level-1 (`Saxpy`, `Scopy`, `Sscal`, `Sswap`, `Sdot`, `Snrm2`, `Sasum`, `Isamax`), Level-2 (`Sgemv`), and Level-3 (`Sgemm`, `Hgemm`, `GemmEx`, `SgemmStridedBatched`, `Sgeam`) backed by Apple `MPSMatrixMultiplication` and `simdgroup_float8x8` shaders.
-- **cuFFT (`libcufft.dylib`):** 1D, 2D, 3D, and batched `cufftPlanMany` (`C2C`, `R2C`, `C2R`) with Stockham Radix-2 and general-radix Metal kernels.
-- **cuDNN (`libcudnn.dylib`):** 2D Convolutions (forward, backward-data, backward-filter, backward-bias), Activations (ReLU, Sigmoid, Tanh, ELU, Swish), Pooling (Max, Avg), Softmax, and Batch Normalization (inference & training).
-- **cuSPARSE (`libcusparse.dylib`):** CSR sparse matrix descriptors, `cusparseSpMV`, and `cusparseSpMM`.
-- **NVRTC (`libnvrtc.dylib`):** Runtime compilation of CUDA C++ strings (`nvrtcCreateProgram`, `nvrtcCompileProgram`, `nvrtcGetPTX`, `nvrtcGetLoweredName`) directly into in-memory Metal pipelines via `cuModuleLoadData`.
-- **PyTorch Custom CUDA Extension Bridge (`python/muda`):** Compiles custom `.cu` kernels into `.dylib` extensions and integrates with `torch.autograd.Function` and `torch.Tensor` on Apple Silicon.
-
-#### CUDA Runtime API (`libcudart` / `muda_runtime`)
-- **Unified Memory:** `cudaMalloc`, `cudaMallocManaged`, `cudaMallocHost`, and `cudaMallocPitch`.
-- **Segregated Buffer Pool:** Power-of-two size-classed allocator (256B to 16MB) to minimize heap allocations and launch overhead.
-- **Transfers & Strides:** 1D and 2D synchronous and asynchronous memory copies and sets (`cudaMemcpy`, `cudaMemcpyAsync`, `cudaMemset`, `cudaMemset2D`).
-- **Streams & Events:** Non-blocking and default streams mapped to `MTLCommandQueue`, and GPU-timed events mapped to `MTLSharedEvent`.
-- **Language Coverage (30-Kernel Parity Corpus):**
-  - **Shared Memory & Synchronization:** `__shared__`, `extern __shared__`, and `__syncthreads()`.
+### 3. CUDA Runtime API (`libcudart`)
+- **Unified & Host Memory:** `cudaMalloc`, `cudaMallocManaged`, `cudaMallocHost`, `cudaFree`, `cudaFreeHost`, and `cudaMallocPitch`.
+- **Segregated Buffer Pool:** Power-of-two size-classed allocator (256 B to 16 MB) that minimizes heap allocation overhead during iterative kernel loops.
+- **Transfers & Fills:** Synchronous and asynchronous 1D and 2D memory copies and sets (`cudaMemcpy`, `cudaMemcpyAsync`, `cudaMemcpy2D`, `cudaMemcpy2DAsync`, `cudaMemset`, `cudaMemsetAsync`, `cudaMemset2D`).
+- **Streams & Events:** Non-blocking and default streams mapped to `MTLCommandQueue`, with GPU timing events mapped to `MTLSharedEvent`.
+- **Core Language & Device Primitives:**
+  - **Thread Indexing:** `threadIdx`, `blockIdx`, `blockDim`, `gridDim`.
+  - **Shared Memory:** `__shared__` and dynamic `extern __shared__` allocations.
+  - **Synchronization:** `__syncthreads()`.
   - **Warp Intrinsics:** Shuffle (`__shfl_sync`, `__shfl_down_sync`, `__shfl_xor_sync`), vote (`__all_sync`, `__any_sync`, `__ballot_sync`), and bitwise operations (`__popc`, `__clz`, `__ffs`, `__brev`).
   - **Atomics:** 32-bit and 64-bit integer atomics (`atomicAdd`, `atomicSub`, `atomicExch`, `atomicMin`, `atomicMax`, `atomicAnd`, `atomicOr`, `atomicXor`) and 32-bit float CAS loops.
-  - **Half-Precision & Vectors:** `half`, `half2`, `float2/3/4`, `int2/3/4`, and `uint2/3/4` aligned math and constructors.
+  - **Half-Precision & Vectors:** IEEE 754-2008 `half`, `half2`, and aligned vector types (`float2/3/4`, `int2/3/4`, `uint2/3/4`).
 
-#### PTX Translation Engine (`compiler/ptx`)
-- **Bump-Pointer Memory Arena:** `ptx::Arena` provides $O(1)$ memory allocation and single-pass resets for compiler translation units.
-- **Zero-Copy Lexer & Shift-Reduce Parser:** Non-recursive, table-driven parser that constructs a strongly-typed AST from PTX 6.x/7.x inputs.
-- **CFG & Structurizer:** Computes basic blocks, register data types, and address-space tracking (`device` vs `threadgroup`). The Relooper engine transforms arbitrary branches into structured MSL loops and guard clauses, falling back to a deterministic state-machine dispatcher for irreducible loops.
+### 4. CUDA Driver API (`libcuda.dylib`)
+- **Clean-Room Driver Interface:** Declares and exports standard driver functions:
+  - Device inspection (`cuInit`, `cuDeviceGet*`, `cuDeviceGetName`, `cuDeviceTotalMem`, `cuDeviceGetAttribute`, `cuDeviceGetUuid`).
+  - Context lifecycle (`cuCtxCreate`, `cuCtxDestroy`, `cuCtxSetCurrent`, `cuCtxGetCurrent`, `cuCtxSynchronize`, `cuDevicePrimaryCtx*`).
+  - Device memory management (`cuMemAlloc`, `cuMemAllocPitch`, `cuMemAllocManaged`, `cuMemFree`, `cuMemGetAddressRange`, `cuPointerGetAttribute`).
+  - Strided & Async Copies (`cuMemcpyHtoD`, `cuMemcpyDtoH`, `cuMemcpyDtoD`, `cuMemcpy2D`, `cuMemcpyAsync`, `cuMemset*`).
+  - In-memory dynamic module loading and launch (`cuModuleLoadData`, `cuModuleGetFunction`, `cuLaunchKernel`).
+  - Occupancy queries (`cuOccupancyMaxActiveBlocksPerMultiprocessor`, `cuOccupancyMaxPotentialBlockSize`).
+- **Driver ABI Compatibility:** Exports standard CUDA 4.0+ `_v2` symbol aliases, and provides stubs for profiler and IPC symbols to avoid runtime binding crashes in Python `ctypes`.
 
-#### CUDA Driver API (`libcuda.dylib` & `cuda.h`)
-- **Clean-Room C Interface:** Declares and exports standard driver types and functions:
-  - Initialization & Device queries (`cuInit`, `cuDeviceGet*`, `cuDeviceTotalMem`, `cuDeviceGetAttribute`).
-  - Context lifecycle (`cuCtxCreate`, `cuCtxDestroy`, `cuCtxSetCurrent`, `cuCtxGetCurrent`, `cuCtxSynchronize`).
-  - Device and host memory management (`cuMemAlloc`, `cuMemAllocPitch`, `cuMemFree`, `cuMemcpy*`, `cuMemset*`).
-  - Streams & Events (`cuStream*`, `cuEvent*`).
-  - Dynamic in-memory kernel launch (`cuLaunchKernel`).
-- **In-Memory Metal JIT:** `cuModuleLoadData` compiles PTX strings in-process using `-[MTLDevice newLibraryWithSource:options:error:]` without spawning subprocesses or touching the disk, reducing module load latency from ~300 ms to < 15 ms.
-- **Numba Integration:** Validated against simulated Numba `@cuda.jit` workflows for elementwise vector addition, shared-memory tree reduction with `bar.sync`, and 2D tiled matrix multiplication.
+### 5. Acceleration Libraries & Runtime Compilation
+- **cuBLAS (`libcublas.dylib`):**
+  - Level-1: `Saxpy`, `Scopy`, `Sscal`, `Sswap`, `Sdot`, `Snrm2`, `Sasum`, `Isamax`.
+  - Level-2: `Sgemv`.
+  - Level-3: `Sgemm`, `Hgemm`, `GemmEx`, `SgemmStridedBatched`, `GemmStridedBatchedEx`, `Sgeam`.
+  - Uses Apple's `MPSMatrixMultiplication` for large matrix multiplications and Apple Silicon `simdgroup_float8x8` hardware matrix shaders for smaller or batched shapes.
+- **cuFFT (`libcufft.dylib`):**
+  - 1D, 2D, 3D, and batched `cufftPlanMany` transforms (`C2C`, `R2C`, `C2R`).
+  - Single-pass shared memory kernels for common power-of-two sizes alongside general multi-pass fallbacks, backed by an LRU plan cache.
+- **cuDNN (`libcudnn.dylib`):**
+  - 4D tensor descriptors (`NCHW`, `NHWC`).
+  - 2D Convolutions (forward, backward-data, backward-filter, backward-bias) with implicit-GEMM SIMD acceleration.
+  - Activations (ReLU, Sigmoid, Tanh, Clipped ReLU, ELU, Swish) with vectorized data paths.
+  - 2D Pooling (Max, Average), Softmax, and Batch Normalization (inference and training forward).
+- **cuSPARSE (`libcusparse.dylib`):**
+  - CSR sparse matrix descriptors (0-based and 1-based indexing).
+  - Sparse matrix-vector (`cusparseSpMV`, FP32/FP16) and sparse matrix-matrix (`cusparseSpMM`, FP32) multiplication.
+- **NVRTC (`libnvrtc.dylib`):**
+  - Runtime compilation of CUDA C++ strings directly into Metal pipelines via `nvrtcCreateProgram`, `nvrtcCompileProgram`, and `nvrtcGetPTX`.
+
+### 6. Python, Numba & PyTorch Integration
+- **Numba CUDA Support:** Verified with Numba's CUDA driver interface via `NUMBA_CUDA_DRIVER`. Supports elementwise vector math, shared-memory reductions with `bar.sync`, and 2D tiled matrix multiplications.
+- **PyTorch Extension Bridge (`python/muda`):** Allows custom `.cu` kernel extensions to be compiled with `nvcc` and called directly from PyTorch, with support for `torch.autograd.Function` and `torch.Tensor` operations via `libcublas`.
+
+### 7. Diagnostics & Environment Tooling (`muda`)
+- `muda doctor [--json] [--smoke-test]`: Inspects the macOS environment, Metal GPU limits, toolchain availability, compiler cache, and runs an end-to-end GPU compute smoke test.
+- `muda path <target>`: Prints absolute paths to `cuda-home`, `libcuda.dylib`, `libcudart.dylib`, `include`, `cache`, or `mudac`.
+- `muda cache <info|clear|verify>`: Inspects, clears, or validates the compiler artifact cache.
+
+### 8. Interactive WebAssembly Playground
+- The core C++ translation engine compiles to WebAssembly (`web/wasm/`), powering an offline in-browser playground (`web/`).
+- Allows developers to paste CUDA C++ or PTX code and view the generated Metal Shading Language in real time, inspect reflected kernel buffer slots and threadgroup allocations, and share code snippets via URL.
 
 ---
 
-### 2. What Is In Progress & Remaining Roadmap
+## Realistic Boundaries & Limitations
 
-The project is currently working through remaining Gate B and Gate C deliverables:
-- **CUDA Textures v1:** 2D texture memory (`cudaArray`), texture objects (`cudaTextureObject_t`), nearest/linear filtering, and clamp/wrap addressing modes.
-- **Device-Side Diagnostics & Printf:** Emulating device `printf(...)` and `assert(...)` via ring-buffer logging.
-- **PyTorch Extension Bridge:** Drop-in `nvcc` wrapper script enabling `torch.utils.cpp_extension` to build CUDA C++ modules on macOS without modifying Python code.
-- **Phase 4 Library Shims:** Acceleration shims for cuBLAS (SGEMM/HGEMM via Apple MPS / `simdgroup_matrix`), cuFFT, and a subset of cuDNN operations.
-- **Extended PTX Instructions:** Widening opcode coverage for specialized vector packing, bit-manipulation, and surface/texture PTX instructions.
+To keep expectations grounded, here is an honest summary of what MUDA does not do or where Apple Silicon differs from NVIDIA hardware:
 
----
-
-### 3. Known Limitations (What May Not Work)
-
-> [!WARNING]
-> Please review these architectural boundaries before attempting to compile arbitrary CUDA codebases.
-
-1. **No Precompiled Binary (SASS) Execution:** MUDA does **not** decompile or run NVIDIA binary files (`.cubin`, ELF objects). Programs must be compiled from CUDA C++ source (`.cu`) or PTX assembly (`.ptx`).
+1. **No Binary SASS / `.cubin` Execution:** MUDA compiles from CUDA C++ source code (`.cu`) or PTX virtual assembly (`.ptx`). It cannot decompile or execute precompiled NVIDIA ELF binaries or proprietary third-party binary libraries.
 2. **Unsupported Device Constructs:**
-   - **Dynamic Parallelism:** Device-side kernel launches (`<<<...>>>` from inside a kernel) are unsupported by Metal.
-   - **Device Function Pointers & Virtual Methods:** Indirect device function calls are rejected.
-   - **Device-Side Recursion:** Kernel functions cannot be recursive.
-3. **Metal Control Flow Constraints:**
-   - Metal Shading Language strictly forbids `goto` statements and labeled jumps.
-   - While natural loops (`while`, `for`) and conditionals (`if`/`else`) are cleanly structurized, complex irreducible branching graphs fall back to state-machine dispatchers, which may carry a performance penalty.
-4. **Precision and Hardware Differences:**
-   - **FP64 (Double Precision):** Apple Silicon GPUs lack native hardware FP64 execution units. Double precision is mapped to single precision (FP32) or emulated in accordance with the project's precision policy.
-   - **Warp Size:** Apple Silicon executes threads in 32-wide SIMD groups (matching NVIDIA warp size), but memory coalescing, cache line dimensions, and threadgroup synchronization characteristics differ from NVIDIA architectures.
-5. **Driver ABI Subsets:**
-   - Only the Driver API subset required for compute and Python/Numba execution is currently implemented. CUDA-OpenGL/Vulkan interop and NVLink peer-to-peer memory APIs are stubs or return `CUDA_ERROR_NOT_SUPPORTED`.
+   - **Dynamic Parallelism:** Metal does not support launching kernels from inside a running GPU kernel (`<<<...>>>` device launches).
+   - **Device Function Pointers & Virtual Methods:** Indirect device-side calls and C++ virtual tables on the device are unsupported.
+   - **Device Recursion:** Kernels cannot be recursive.
+3. **Control Flow Differences:**
+   - Metal Shading Language strictly forbids arbitrary `goto` statements and labeled jumps.
+   - Natural loops (`while`, `for`) and conditional branches (`if`/`else`) are structurized cleanly. Complex irreducible branch graphs fall back to an emulated state-machine dispatcher, which can impact performance.
+4. **FP64 (Double Precision) Hardware Limitations:**
+   - Apple Silicon GPUs do not possess hardware double-precision (FP64) execution units. FP64 operations are mapped to single precision (FP32) or run through software emulation depending on the configured math mode.
+5. **Driver API Scope:**
+   - The Driver API implementation focuses on compute, memory management, streams, events, and module loading.
+   - OpenGL/Vulkan interop, multi-GPU peer-to-peer memory transfers, and NVLink APIs are not supported.
 
 ---
 
@@ -124,35 +119,36 @@ The project is currently working through remaining Gate B and Gate C deliverable
 
 ### Prerequisites
 
-* **Hardware:** Apple Silicon Mac (M1, M2, M3, M4 or Pro/Max/Ultra variants).
-* **Operating System:** macOS 14.0 (Sonoma) or macOS 15.0+ (Sequoia).
-* **Toolchain:**
+* **Hardware:** Any Apple Silicon Mac (M1, M2, M3, M4 or Pro/Max/Ultra).
+* **Operating System:** macOS 14.0 (Sonoma) or newer.
+* **Build Tools:**
   * Xcode Command Line Tools (`xcode-select --install`).
   * CMake 3.28 or newer.
   * Ninja build system (`brew install ninja`).
+  * Python 3.10+ (for tests and Python bindings; `brew install uv` recommended).
 
 ---
 
 ### Building from Source
 
-Clone the repository and configure using CMake Presets:
+Clone the repository and build using CMake presets:
 
 ```bash
 # Clone the repository
 git clone https://github.com/AshitomW/MUDA.git
-cd cuda-metal
+cd MUDA
 
 # Configure Release build with Ninja
 cmake --preset release
 
-# Build compiler, runtime, libraries, tools, and test suites
+# Build compiler, runtime, libraries, tools, and benchmarks
 cmake --build --preset release
 
-# Run the complete test suite (19 test targets)
+# Run the test suite (32 automated tests)
 ctest --preset release --output-on-failure
 ```
 
-You can also build manually with standard CMake arguments:
+Alternatively, you can build with standard CMake commands:
 
 ```bash
 cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
@@ -162,75 +158,183 @@ ctest --test-dir build --output-on-failure
 
 ---
 
-### Installing MUDA
+### Verifying Your Setup
 
-To install headers, the `mudac` compiler driver, and libraries into your system or local prefix:
+Run the built-in diagnostic tool to check your GPU, toolchain, and run a quick compute smoke test:
 
 ```bash
-# Install to /usr/local (or specify -DCMAKE_INSTALL_PREFIX=/path)
-sudo cmake --install build
+./build/tools/muda doctor --smoke-test
 ```
 
-This installs:
-- **Headers:** `/usr/local/include/cuda.h`, `/usr/local/include/cuda_runtime.h`, and `/usr/local/include/muda/`
-- **Compiler:** `/usr/local/bin/mudac` and `/usr/local/bin/muda`
-- **Libraries:**
-  - `/usr/local/lib/libcuda.dylib` (CUDA Driver API)
-  - `/usr/local/lib/libmuda_runtime.a` (CUDA Runtime API)
-  - `/usr/local/lib/libmuda_compiler.a` (Translation & PTX engine)
-
----
-
-### Linking and Environment Setup
-
-To allow dynamic linkers or Python (`ctypes`, Numba) to locate `libcuda.dylib` on macOS, export the library directory:
-
-```bash
-export DYLD_LIBRARY_PATH="/usr/local/lib:$DYLD_LIBRARY_PATH"
-# Or if running directly from the build directory:
-export DYLD_LIBRARY_PATH="$(pwd)/build/runtime:$DYLD_LIBRARY_PATH"
-```
-
-#### Compiling Standalone CUDA Sources
-```bash
-# Compile and link a CUDA .cu source directly to an executable
-mudac samples/vector_add.cu -o vector_add_demo
-./vector_add_demo
-
-# Emit Metal Shading Language for inspection
-mudac samples/vector_add.cu -S -o vector_add.metal
-
-# Compile PTX directly
-mudac kernel.ptx -o kernel_runner
-```
-
-#### Running the Performance Benchmarks
-```bash
-# Execute microbenchmarks and GPU throughput suite
-./build/benchmarks/runtime_bench
+Example output:
+```text
+muda version: 0.1.0
+host os: Darwin (arm64)
+device: Apple M1
+  backend: metal
+  unified memory: yes
+  working set: 5726633984 bytes
+  max buffer length: 4294967296 bytes
+  max threads per threadgroup: 1024
+  max threadgroup memory: 32768 bytes
+metal toolchain: available
+cache directory: ~/.cache/muda/v1 (writable)
+libcuda.dylib: .../build/runtime/libcuda.dylib
+gpu smoke test: passed
 ```
 
 ---
 
-## Verification & Test Coverage
+### Environment Setup
 
-MUDA maintains a zero-warning compiler policy under strict Clang flags (`-Wall -Wextra -Wpedantic -Wshadow -Wconversion`). The test suite currently includes:
+To use MUDA with existing build systems or Python packages, configure your environment to point to MUDA's `cuda-home` layout:
 
-| Test Group | Test Binary | Coverage |
+```bash
+# Point CUDA_HOME to MUDA's build or install directory
+export CUDA_HOME="$(pwd)/build/cuda-home"
+export PATH="$CUDA_HOME/bin:$PATH"
+export DYLD_LIBRARY_PATH="$CUDA_HOME/lib:$DYLD_LIBRARY_PATH"
+```
+
+---
+
+### Compiling Your First Kernel
+
+Given a simple CUDA file `vector_add.cu`:
+
+```cpp
+#include <cuda_runtime.h>
+#include <stdio.h>
+
+__global__ void vectorAdd(const float* a, const float* b, float* c, int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) {
+        c[i] = a[i] + b[i];
+    }
+}
+
+int main() {
+    const int n = 1024;
+    size_t bytes = n * sizeof(float);
+
+    float *d_a, *d_b, *d_c;
+    cudaMalloc(&d_a, bytes);
+    cudaMalloc(&d_b, bytes);
+    cudaMalloc(&d_c, bytes);
+
+    vectorAdd<<<(n + 255) / 256, 256>>>(d_a, d_b, d_c, n);
+    cudaDeviceSynchronize();
+
+    cudaFree(d_a);
+    cudaFree(d_b);
+    cudaFree(d_c);
+    printf("Kernel executed successfully on Apple Silicon!\n");
+    return 0;
+}
+```
+
+You can compile and run it directly:
+
+```bash
+# Compile to a native macOS binary
+mudac vector_add.cu -o vector_add
+
+# Run on your Apple Silicon GPU
+./vector_add
+
+# Or inspect the generated Metal Shading Language
+mudac vector_add.cu -S -o vector_add.metal
+```
+
+---
+
+## Python & Framework Usage
+
+### Numba Integration
+
+You can instruct Numba to use MUDA's `libcuda.dylib` by setting the `NUMBA_CUDA_DRIVER` environment variable:
+
+```bash
+export NUMBA_CUDA_DRIVER="$(muda path libcuda.dylib)"
+python3 -c "from numba import cuda; print('Discovered GPU:', cuda.gpus[0].name)"
+```
+
+Numba `@cuda.jit` functions will compile PTX in memory, which MUDA JIT-compiles directly into Metal compute pipelines on the fly.
+
+### PyTorch Custom CUDA Extensions
+
+MUDA includes a PyTorch bridge in `python/muda` to help compile custom CUDA C++ extensions with `nvcc`:
+
+```python
+import os
+import torch
+from muda.pytorch_bridge import configure_environment, compile_cuda_extension
+
+# Configure environment paths (CUDA_HOME, DYLD_LIBRARY_PATH)
+configure_environment()
+
+# Compile a custom CUDA extension into a dylib
+ext = compile_cuda_extension(
+    name="custom_ops",
+    sources=["custom_kernel.cu"],
+    extra_cflags=["-O3"]
+)
+
+# Call compiled kernels from PyTorch autograd functions or tensors
+```
+
+---
+
+## Verification & Testing
+
+MUDA includes 32 automated test suites executed via CTest, covering:
+
+| Category | Tests | Description |
 |---|---|---|
-| **Driver API** | `driver_api_test` | Device discovery, context stack, memory alloc/copy, in-memory PTX compilation, and kernel launch |
-| **Numba Simulation** | `numba_mock_test` | Elementwise `vectorAdd`, shared memory tree reduction (`bar.sync`), and 2D tiled matrix multiply |
-| **PTX Engine** | `ptx_lexer_test`, `ptx_parser_test`, `ptx_to_mmir_test` | Tokens, shift-reduce AST generation, CFG, and end-to-end PTX execution on GPU |
-| **Numerical Parity** | `corpus_test`, `vector_add_test` | 30 numerical parity kernels comparing Metal output against CPU reference results |
-| **Language Coverage** | `warp_intrinsics_test`, `atomics_test`, `half_vector_test` | Shuffle, ballot, 32/64-bit atomics, float CAS, and half-precision vectors |
-| **Runtime Infrastructure** | `cuda_runtime_test`, `buffer_pool_test`, `compiler_cache_test` | Streams, events, pitch memory, memory pool reuse, and content-addressed cache |
+| **Language & Primitives** | `vector_add_test`, `warp_intrinsics_test`, `atomics_test`, `half_vector_test` | Shuffle, ballot, 32/64-bit atomics, float CAS, FP16 vectors |
+| **Numerical Parity** | `corpus_test` | 30 numerical parity kernels comparing Metal output against CPU reference results across linear algebra, stencils, and reductions |
+| **Compiler & PTX** | `compiler_test`, `ptx_lexer_test`, `ptx_parser_test`, `ptx_to_mmir_test`, `compiler_cache_test` | AST rewriting, PTX shift-reduce parsing, CFG relooper, and content cache |
+| **Runtime & Driver** | `cuda_runtime_test`, `driver_api_test`, `buffer_pool_test`, `numba_mock_test` | Unified memory, streams, events, buffer pool reuse, and in-memory module loading |
+| **Acceleration Libraries** | `cublas_test`, `cufft_test`, `cudnn_test`, `cusparse_test`, `nvrtc_test` | cuBLAS GEMM, cuFFT 1D/2D transforms, cuDNN convolutions/activations, cuSPARSE SpMV/SpMM, and NVRTC compilation |
+| **Integration & Tooling** | `header_hygiene_test`, `muda_cli_test`, `python_*_test` | CLI commands, Python ctypes ABI, Numba CUDA execution, and PyTorch extensions |
+
+To run the full suite:
+
+```bash
+ctest --test-dir build --output-on-failure
+```
 
 ---
 
-## Contributing & Development
+## Performance Benchmarks
 
-Contributions, bug reports, and kernel test cases are welcome. When submitting changes:
-1. Ensure all code compiles cleanly with `-Wall -Wextra -Wpedantic -Wshadow -Wconversion` without warnings.
-2. Run `clang-format` across changed files before committing.
-3. Ensure all 19 test suites pass: `ctest --test-dir build --output-on-failure`.
-4. Follow the engineering standards outlined in [`AGENTS.md`](AGENTS.md) and [`docs/ROADMAP.md`](docs/ROADMAP.md).
+A dedicated benchmark suite is available under `benchmarks/runtime_bench` to measure micro-latencies, memory transfer bandwidth, and math library throughput:
+
+```bash
+# Run all benchmark suites
+./build/benchmarks/runtime_bench
+
+# Or run specific benchmark categories
+./build/benchmarks/runtime_bench --micro        # CPU enqueue latency, dispatch overhead, event timing
+./build/benchmarks/runtime_bench --throughput   # Streaming memory bandwidth, GEMM compute throughput
+./build/benchmarks/runtime_bench --libraries    # cuBLAS, cuFFT, cuDNN, and cuSPARSE throughput
+```
+
+---
+
+## Contributing
+
+Bug reports, test cases, and pull requests are welcome. When submitting changes:
+
+1. Ensure code compiles cleanly with `-Wall -Wextra -Wpedantic -Wshadow -Wconversion` without warnings.
+2. Format code with `clang-format` before opening a pull request.
+3. Verify that all 32 test suites pass:
+   ```bash
+   ctest --test-dir build --output-on-failure
+   ```
+
+---
+
+## License
+
+MUDA is licensed under the **Apache License 2.0 with LLVM Exceptions**. See the [LICENSE](LICENSE) file for full license text.
