@@ -11,6 +11,7 @@ add_executable(muda_compiler
   "${REPO_ROOT}/compiler/src/ast_extractor.cpp"
   "${REPO_ROOT}/compiler/src/translator.cpp"
   "${REPO_ROOT}/compiler/src/mmir.cpp"
+  "${REPO_ROOT}/compiler/src/muda_fp64_msl.cpp"
   "${REPO_ROOT}/compiler/src/type_table.cpp"
   "${REPO_ROOT}/compiler/src/ptx/arena.cpp"
   "${REPO_ROOT}/compiler/src/ptx/cfg.cpp"
@@ -47,4 +48,3 @@ set_target_properties(muda_compiler PROPERTIES
   SUFFIX ".js"
   RUNTIME_OUTPUT_DIRECTORY "${REPO_ROOT}/web/dist"
 )
-
