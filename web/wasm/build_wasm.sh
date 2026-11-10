@@ -34,6 +34,7 @@ SOURCES=(
   "${REPO_ROOT}/compiler/src/ast_extractor.cpp"
   "${REPO_ROOT}/compiler/src/translator.cpp"
   "${REPO_ROOT}/compiler/src/mmir.cpp"
+  "${REPO_ROOT}/compiler/src/muda_fp64_msl.cpp"
   "${REPO_ROOT}/compiler/src/type_table.cpp"
   "${REPO_ROOT}/compiler/src/ptx/arena.cpp"
   "${REPO_ROOT}/compiler/src/ptx/cfg.cpp"
@@ -71,4 +72,3 @@ echo "==> Compiling MUDA WebAssembly engine..."
 
 echo "==> Build successful!"
 ls -lh "${OUTPUT_DIR}/muda_compiler.js" "${OUTPUT_DIR}/muda_compiler.wasm"
-
