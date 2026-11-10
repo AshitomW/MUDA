@@ -38,6 +38,7 @@ void PrintUsage(std::ostream& out) {
       << "  --muda-print-metadata     Print extracted kernel metadata JSON\n"
       << "  --muda-cache=<dir>        Use <dir> for the compiler artifact cache\n"
       << "  --muda-no-cache           Disable the compiler artifact cache\n"
+      << "  --muda-fp64=<mode>        FP64 emulation policy: off (default), fast48, or ieee64\n"
       << "  -h, --help                Show this help\n"
       << "  --version, -V             Show version\n";
 }
@@ -66,6 +67,10 @@ void AppendCommaSeparated(std::string_view csv, std::vector<std::string>* target
 
 int main(int argc, char** argv) {
   muda::compiler::CompileOptions options;
+  const char* env_fp64 = std::getenv("MUDA_FP64");
+  if (env_fp64 != nullptr && env_fp64[0] != '\0') {
+    options.fp64_policy = muda::compiler::ParseFp64Policy(env_fp64);
+  }
 
   for (int index = 1; index < argc; ++index) {
     const std::string_view argument = argv[index];
@@ -115,6 +120,16 @@ int main(int argc, char** argv) {
     }
     if (StartsWith(argument, "--muda-cache=")) {
       options.cache_dir = argument.substr(std::string_view("--muda-cache=").size());
+      continue;
+    }
+    if (StartsWith(argument, "--muda-fp64=")) {
+      options.fp64_policy =
+          muda::compiler::ParseFp64Policy(argument.substr(std::string_view("--muda-fp64=").size()));
+      continue;
+    }
+    if (StartsWith(argument, "--fp64=")) {
+      options.fp64_policy =
+          muda::compiler::ParseFp64Policy(argument.substr(std::string_view("--fp64=").size()));
       continue;
     }
     if (argument == "-o" || argument == "--output-file") {

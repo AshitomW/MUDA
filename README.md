@@ -49,6 +49,7 @@ MUDA bridges these differences by translating CUDA C++ and PTX into MSL, providi
   - **Warp Intrinsics:** Shuffle (`__shfl_sync`, `__shfl_down_sync`, `__shfl_xor_sync`), vote (`__all_sync`, `__any_sync`, `__ballot_sync`), and bitwise operations (`__popc`, `__clz`, `__ffs`, `__brev`).
   - **Atomics:** 32-bit and 64-bit integer atomics (`atomicAdd`, `atomicSub`, `atomicExch`, `atomicMin`, `atomicMax`, `atomicAnd`, `atomicOr`, `atomicXor`) and 32-bit float CAS loops.
   - **Half-Precision & Vectors:** IEEE 754-2008 `half`, `half2`, and aligned vector types (`float2/3/4`, `int2/3/4`, `uint2/3/4`).
+  - **Double Precision (FP64) Emulation:** Support for `double`, `double2/3/4`, double-precision shared memory, and math intrinsics (`fma`, `sqrt`, `rsqrt`, `abs`, `min`, `max`) via `--muda-fp64=fast48` (high-throughput Double-Single emulation in `runtime/include/muda/muda_fp64.metal`) or `--muda-fp64=ieee64` (bit-exact IEEE-754 64-bit integer bitfield emulation with subnormals and round-to-nearest-even).
 
 ### 4. CUDA Driver API (`libcuda.dylib`)
 - **Clean-Room Driver Interface:** Declares and exports standard driver functions:
@@ -62,10 +63,10 @@ MUDA bridges these differences by translating CUDA C++ and PTX into MSL, providi
 
 ### 5. Acceleration Libraries & Runtime Compilation
 - **cuBLAS (`libcublas.dylib`):**
-  - Level-1: `Saxpy`, `Scopy`, `Sscal`, `Sswap`, `Sdot`, `Snrm2`, `Sasum`, `Isamax`.
-  - Level-2: `Sgemv`.
-  - Level-3: `Sgemm`, `Hgemm`, `GemmEx`, `SgemmStridedBatched`, `GemmStridedBatchedEx`, `Sgeam`.
-  - Uses Apple's `MPSMatrixMultiplication` for large matrix multiplications and Apple Silicon `simdgroup_float8x8` hardware matrix shaders for smaller or batched shapes.
+  - Level-1: `Saxpy`, `Scopy`, `Sscal`, `Sswap`, `Sdot`, `Snrm2`, `Sasum`, `Isamax`, and double precision (`Daxpy`, `Dcopy`, `Dscal`, `Dswap`, `Ddot`, `Dnrm2`, `Dasum`, `Idamax`).
+  - Level-2: `Sgemv`, `Dgemv`.
+  - Level-3: `Sgemm`, `Hgemm`, `GemmEx`, `SgemmStridedBatched`, `GemmStridedBatchedEx`, `Sgeam`, and double precision (`Dgemm`, `DgemmStridedBatched`, `Dgeam`).
+  - Uses Apple's `MPSMatrixMultiplication` for large matrix multiplications and Apple Silicon `simdgroup_float8x8` hardware matrix shaders for smaller or batched shapes; accelerates double-precision routines directly on unified device memory via Apple Accelerate.
 - **cuFFT (`libcufft.dylib`):**
   - 1D, 2D, 3D, and batched `cufftPlanMany` transforms (`C2C`, `R2C`, `C2R`).
   - Single-pass shared memory kernels for common power-of-two sizes alongside general multi-pass fallbacks, backed by an LRU plan cache.
@@ -107,8 +108,12 @@ To keep expectations grounded, here is an honest summary of what MUDA does not d
 3. **Control Flow Differences:**
    - Metal Shading Language strictly forbids arbitrary `goto` statements and labeled jumps.
    - Natural loops (`while`, `for`) and conditional branches (`if`/`else`) are structurized cleanly. Complex irreducible branch graphs fall back to an emulated state-machine dispatcher, which can impact performance.
-4. **FP64 (Double Precision) Hardware Limitations:**
-   - Apple Silicon GPUs do not possess hardware double-precision (FP64) execution units. FP64 operations are mapped to single precision (FP32) or run through software emulation depending on the configured math mode.
+4. **FP64 (Double Precision) Hardware Limitations & Emulation:**
+   - Apple Silicon GPUs possess zero native 64-bit floating-point ALU hardware.
+   - MUDA implements normative Decision D8: by default (`--muda-fp64=off`), kernels containing `double` are rejected with diagnostic `ALY-C-401` to prevent silent precision loss.
+   - Passing `--muda-fp64=fast48` (or `MUDA_FP64=fast48`) activates high-throughput Double-Single (DS) software emulation via two 32-bit floats with Knuth error correction (`runtime/include/muda/muda_fp64.metal`), providing ~10^-14 relative precision.
+   - Passing `--muda-fp64=ieee64` (or `MUDA_FP64=ieee64`) activates bit-exact IEEE-754 software emulation using 64-bit integer bitfield arithmetic, providing exact IEEE-754 semantics including subnormals, infinities, NaNs, and round-to-nearest-even.
+   - In cuBLAS, double-precision routines (`cublasD*`) execute with full native 64-bit hardware precision directly on unified device memory via Apple Accelerate BLAS.
 5. **Driver API Scope:**
    - The Driver API implementation focuses on compute, memory management, streams, events, and module loading.
    - OpenGL/Vulkan interop, multi-GPU peer-to-peer memory transfers, and NVLink APIs are not supported.

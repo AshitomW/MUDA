@@ -45,7 +45,7 @@ DataType ConvertPtxType(TypeKind kind) noexcept {
     case TypeKind::kF32:
       return DataType{ScalarType::kFloat32, VectorWidth::k1};
     case TypeKind::kF64:
-      return DataType{ScalarType::kFloat32, VectorWidth::k1};  // FP64 policy
+      return DataType{ScalarType::kFloat64, VectorWidth::k1};
   }
   return DataType{ScalarType::kFloat32, VectorWidth::k1};
 }
@@ -76,6 +76,9 @@ DataType TypeInference::GetDataType(std::string_view reg_name) const noexcept {
   }
   if (reg_name.starts_with("%r") || reg_name.starts_with("r")) {
     return DataType{ScalarType::kInt32, VectorWidth::k1};
+  }
+  if (reg_name.starts_with("%fd") || reg_name.starts_with("fd")) {
+    return DataType{ScalarType::kFloat64, VectorWidth::k1};
   }
   if (reg_name.starts_with("%f") || reg_name.starts_with("f")) {
     return DataType{ScalarType::kFloat32, VectorWidth::k1};

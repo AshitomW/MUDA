@@ -5,6 +5,7 @@ add_library(
   src/driver.cpp
   src/host_rewriter.cpp
   src/mmir.cpp
+  src/muda_fp64_msl.cpp
   src/process.cpp
   src/ptx/arena.cpp
   src/ptx/cfg.cpp

@@ -187,12 +187,28 @@ nvrtcResult nvrtcCompileProgram(nvrtcProgram prog, int numOptions, const char* c
   }
 
   std::lock_guard<std::mutex> lock(state->mutex);
+  muda::compiler::TranslationOptions trans_opts;
+  const char* env_fp64 = std::getenv("MUDA_FP64");
+  if (env_fp64 != nullptr && env_fp64[0] != '\0') {
+    trans_opts.fp64_policy = muda::compiler::ParseFp64Policy(env_fp64);
+  }
+
   std::string macro_preamble;
   for (int i = 0; i < numOptions; ++i) {
     if (options[i] == nullptr) {
       return NVRTC_ERROR_INVALID_OPTION;
     }
     const std::string_view opt = options[i];
+    if (opt.starts_with("--muda-fp64=")) {
+      trans_opts.fp64_policy =
+          muda::compiler::ParseFp64Policy(opt.substr(std::string_view("--muda-fp64=").size()));
+      continue;
+    }
+    if (opt.starts_with("--fp64=")) {
+      trans_opts.fp64_policy =
+          muda::compiler::ParseFp64Policy(opt.substr(std::string_view("--fp64=").size()));
+      continue;
+    }
     if (opt.starts_with("-D") && opt.size() > 2) {
       const std::string_view def = opt.substr(2);
       const std::size_t eq = def.find('=');
@@ -207,7 +223,8 @@ nvrtcResult nvrtcCompileProgram(nvrtcProgram prog, int numOptions, const char* c
 
   const std::string full_source =
       macro_preamble + InlineVirtualHeaders(state->source, state->virtual_headers);
-  const muda::compiler::TranslationResult tr = muda::compiler::TranslateCudaToMsl(full_source);
+  const muda::compiler::TranslationResult tr =
+      muda::compiler::TranslateCudaToMsl(full_source, trans_opts);
   state->compiled = true;
 
   if (!tr.ok()) {
@@ -223,6 +240,10 @@ nvrtcResult nvrtcCompileProgram(nvrtcProgram prog, int numOptions, const char* c
   // Emit an NVRTC PTX envelope carrying the validated CUDA source so cuModuleLoadData
   // translates and compiles all kernels directly in-memory via Metal.
   std::string ptx = ".version 7.8\n.target sm_86\n.address_size 64\n";
+  if (trans_opts.fp64_policy != muda::compiler::Fp64Policy::kOff) {
+    ptx += "// MUDA_FP64_POLICY=" +
+           std::string(muda::compiler::Fp64PolicyName(trans_opts.fp64_policy)) + "\n";
+  }
   for (const auto& k : tr.kernels) {
     ptx += "// .entry " + k.name + "\n";
     for (auto& [expr, lowered] : state->lowered_names) {

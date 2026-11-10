@@ -7,7 +7,7 @@
 
 namespace muda::compiler {
 
-const std::array<TypeMappingEntry, 45> kTypeTable = {{
+const std::array<TypeMappingEntry, 49> kTypeTable = {{
     {"bool", {ScalarType::kBool, VectorWidth::k1}},
     {"char", {ScalarType::kInt8, VectorWidth::k1}},
     {"signed char", {ScalarType::kInt8, VectorWidth::k1}},
@@ -53,6 +53,10 @@ const std::array<TypeMappingEntry, 45> kTypeTable = {{
     {"__half2", {ScalarType::kFloat16, VectorWidth::k2}},
     {"half3", {ScalarType::kFloat16, VectorWidth::k3}},
     {"half4", {ScalarType::kFloat16, VectorWidth::k4}},
+    {"double", {ScalarType::kFloat64, VectorWidth::k1}},
+    {"double2", {ScalarType::kFloat64, VectorWidth::k2}},
+    {"double3", {ScalarType::kFloat64, VectorWidth::k3}},
+    {"double4", {ScalarType::kFloat64, VectorWidth::k4}},
 }};
 
 const std::array<TypeMappingEntry, 4> kFloatTypeTable = {{
@@ -69,15 +73,22 @@ const std::array<BuiltinMappingEntry, 4> kBuiltinTable = {{
     {"gridDim", "threadgroups_per_grid"},
 }};
 
-const std::array<BuiltinMappingEntry, 36> kMathIntrinsicTable = {{
+const std::array<BuiltinMappingEntry, 46> kMathIntrinsicTable = {{
     {"fmaf", "fma"},
     {"__fmaf_rn", "fma"},
+    {"fma", "muda_fp64_fma"},
+    {"__fma_rn", "muda_fp64_fma"},
     {"sqrtf", "sqrt"},
     {"__fsqrt_rn", "sqrt"},
+    {"sqrt", "muda_fp64_sqrt"},
     {"rsqrtf", "rsqrt"},
+    {"rsqrt", "muda_fp64_rsqrt"},
     {"fabsf", "abs"},
+    {"fabs", "muda_fp64_abs"},
     {"fminf", "min"},
+    {"fmin", "muda_fp64_min"},
     {"fmaxf", "max"},
+    {"fmax", "muda_fp64_max"},
     {"expf", "exp"},
     {"__expf", "fast::exp"},
     {"logf", "log"},
@@ -97,6 +108,9 @@ const std::array<BuiltinMappingEntry, 36> kMathIntrinsicTable = {{
     {"make_float2", "float2"},
     {"make_float3", "float3"},
     {"make_float4", "float4"},
+    {"make_double2", "muda_fp64_2"},
+    {"make_double3", "muda_fp64_3"},
+    {"make_double4", "muda_fp64_4"},
     {"make_int2", "int2"},
     {"make_int3", "int3"},
     {"make_int4", "int4"},
@@ -148,4 +162,3 @@ std::string_view MathIntrinsicReplacement(std::string_view word) noexcept {
 }
 
 }  // namespace muda::compiler
-

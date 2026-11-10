@@ -99,7 +99,7 @@ std::string GetModifierMslType(const Instruction& inst, const TypeInference& typ
     if (mod == ".f32")
       return "float";
     if (mod == ".f64")
-      return "float";
+      return "muda_fp64";
     if (mod == ".s32")
       return "int";
     if (mod == ".u32")
@@ -121,8 +121,10 @@ std::string GetModifierMslType(const Instruction& inst, const TypeInference& typ
     if (mod == ".pred")
       return "bool";
   }
-  if (inst.type == TypeKind::kF32 || inst.type == TypeKind::kF64)
+  if (inst.type == TypeKind::kF32)
     return "float";
+  if (inst.type == TypeKind::kF64)
+    return "muda_fp64";
   if (inst.type == TypeKind::kS32)
     return "int";
   if (inst.type == TypeKind::kU32)
@@ -414,8 +416,9 @@ void DeclareRegisters(const Function& fn, const TypeInference& types, std::strin
 
 }  // namespace
 
-mmir::Module LowerPtxToMmir(const Program& program) {
+mmir::Module LowerPtxToMmir(const Program& program, const TranslationOptions& options) {
   mmir::Module module;
+  module.fp64_policy = options.fp64_policy;
 
   for (const Function& fn : program.functions) {
     const TypeInference types = TypeInference::Analyze(fn);
@@ -480,7 +483,8 @@ mmir::Module LowerPtxToMmir(const Program& program) {
   return module;
 }
 
-TranslationResult TranslatePtxToMsl(std::string_view ptx_source) {
+TranslationResult TranslatePtxToMsl(std::string_view ptx_source,
+                                    const TranslationOptions& options) {
   Arena arena;
   Lexer lexer(ptx_source);
   Parser parser(lexer, arena);
@@ -492,7 +496,7 @@ TranslationResult TranslatePtxToMsl(std::string_view ptx_source) {
     return failure;
   }
 
-  mmir::Module module = LowerPtxToMmir(pr.program);
+  mmir::Module module = LowerPtxToMmir(pr.program, options);
   const DiagnosticCode verify_code = mmir::VerifyModule(module);
   if (verify_code != DiagnosticCode::kOk) {
     TranslationResult failure;

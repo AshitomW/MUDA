@@ -84,6 +84,7 @@ target_include_directories(
 target_compile_definitions(
   cublas
   PRIVATE
+    ACCELERATE_NEW_LAPACK
     MUDA_CUBLAS_METALLIB_PATH="${CUBLAS_METALLIB_FILE}"
     MUDA_CUBLAS_METAL_SOURCE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/blas/shaders/cublas_kernels.metal"
 )
@@ -97,6 +98,7 @@ target_link_libraries(
   PRIVATE
     muda_lib_common
     muda_warnings
+    "-framework Accelerate"
     "-framework Foundation"
     "-framework Metal"
     "-framework MetalPerformanceShaders"

@@ -51,6 +51,7 @@ struct Module {
   std::vector<std::string> includes;
   std::vector<DeviceFunction> device_functions;
   std::vector<KernelFunction> kernels;
+  Fp64Policy fp64_policy = Fp64Policy::kOff;
 };
 
 /**

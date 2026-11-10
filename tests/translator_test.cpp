@@ -89,8 +89,19 @@ int main() {
   const muda::compiler::TranslationResult unsupported =
       muda::compiler::TranslateCudaToMsl("__global__ void k(double* x) {}");
   if (unsupported.ok() ||
-      unsupported.code != muda::compiler::DiagnosticCode::kUnsupportedParameterType) {
-    std::cerr << "double parameter should fail with kUnsupportedParameterType\n";
+      unsupported.code != muda::compiler::DiagnosticCode::kNativeFp64Unsupported) {
+    std::cerr << "double parameter under default policy should fail with kNativeFp64Unsupported\n";
+    return 1;
+  }
+
+  const muda::compiler::TranslationOptions fast48_opts{.fp64_policy =
+                                                           muda::compiler::Fp64Policy::kFast48};
+  const muda::compiler::TranslationResult supported_fp64 = muda::compiler::TranslateCudaToMsl(
+      "__global__ void k(double* x, const double* y) { *x += *y; }", fast48_opts);
+  if (!supported_fp64.ok() || supported_fp64.kernel.parameters.size() != 2 ||
+      supported_fp64.kernel.parameters[0].metal_type() != "muda_fp64" ||
+      supported_fp64.msl.find("muda_fp64") == std::string::npos) {
+    std::cerr << "double parameters under fast48 policy should translate cleanly to muda_fp64\n";
     return 1;
   }
 

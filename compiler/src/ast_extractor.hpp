@@ -42,9 +42,11 @@ struct ParsedParameter {
   KernelParameter parameter;
 };
 
-[[nodiscard]] ParsedParameter ParseParameter(std::string_view text, std::size_t index);
+[[nodiscard]] ParsedParameter ParseParameter(std::string_view text, std::size_t index,
+                                             Fp64Policy fp64_policy = Fp64Policy::kOff);
 [[nodiscard]] DiagnosticCode ParseParameterList(std::string_view parameter_list,
-                                                std::vector<KernelParameter>* out_params);
+                                                std::vector<KernelParameter>* out_params,
+                                                Fp64Policy fp64_policy = Fp64Policy::kOff);
 
 enum class QualifierKind : std::uint8_t {
   kGlobal,
@@ -66,6 +68,7 @@ void ExtractIncludes(std::string_view source, std::vector<std::string>* out_incl
 
 [[nodiscard]] DiagnosticCode ExtractSharedMemoryAndLowerBody(
     std::string_view raw_body, std::vector<mmir::SharedAllocation>* out_shared,
-    std::string* out_lowered_body, std::span<const KernelParameter> parameters = {});
+    std::string* out_lowered_body, std::span<const KernelParameter> parameters = {},
+    Fp64Policy fp64_policy = Fp64Policy::kOff);
 
 }  // namespace muda::compiler

@@ -37,6 +37,9 @@ using CublasHandleTable =
 [[nodiscard]] cublasStatus_t ResolveScalarFloat(const CublasContext& ctx, const float* ptr,
                                                 float* out_value) noexcept;
 
+[[nodiscard]] cublasStatus_t ResolveScalarDouble(const CublasContext& ctx, const double* ptr,
+                                                 double* out_value) noexcept;
+
 [[nodiscard]] cublasStatus_t ResolveScalarHalfAsFloat(const CublasContext& ctx, const __half* ptr,
                                                       float* out_value) noexcept;
 

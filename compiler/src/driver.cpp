@@ -260,9 +260,16 @@ bool CompileMetalToAir(const std::filesystem::path& metal_path,
       std::string(MetalStandardFlag(options.metal_standard)),
       std::string(OptimizationLevelFlag(options.optimization)),
   };
-  if (options.optimization == OptimizationLevel::kFast) {
+  if (options.optimization == OptimizationLevel::kFast && options.fp64_policy == Fp64Policy::kOff) {
     compile_args.emplace_back("-ffast-math");
   }
+  if (options.fp64_policy == Fp64Policy::kIeee64) {
+    compile_args.emplace_back("-DMUDA_FP64_IEEE=1");
+  }
+#ifdef MUDA_DEFAULT_RUNTIME_INCLUDE_DIR
+  compile_args.emplace_back("-I");
+  compile_args.emplace_back(MUDA_DEFAULT_RUNTIME_INCLUDE_DIR);
+#endif
   if (options.input.has_parent_path()) {
     compile_args.emplace_back("-I");
     compile_args.emplace_back(options.input.parent_path().string());
@@ -490,11 +497,12 @@ CompileResult Compile(const CompileOptions& options) {
     return Failure(DiagnosticCode::kCannotOpenInput);
   }
 
+  const TranslationOptions trans_options{.fp64_policy = options.fp64_policy};
   TranslationResult translation;
   if (options.input.extension() == ".ptx") {
-    translation = ptx::TranslatePtxToMsl(source);
+    translation = ptx::TranslatePtxToMsl(source, trans_options);
   } else {
-    translation = TranslateCudaToMsl(source);
+    translation = TranslateCudaToMsl(source, trans_options);
   }
   if (!translation.ok()) {
     return Failure(translation.code);

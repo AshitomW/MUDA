@@ -3,14 +3,13 @@
  * @brief Comprehensive verification test suite for the MUDA cuBLAS shim (libcublas.dylib).
  */
 
-#include "cublas_v2.h"
-
 #include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
 #include <vector>
 
+#include "cublas_v2.h"
 #include "cuda_runtime.h"
 
 namespace {
@@ -24,6 +23,15 @@ bool Expect(bool condition, const char* message) {
 }
 
 bool ExpectClose(float actual, float expected, float tol, const char* message) {
+  if (std::fabs(actual - expected) > tol) {
+    std::cerr << "FAIL: " << message << " (actual=" << actual << ", expected=" << expected
+              << ", diff=" << std::fabs(actual - expected) << ")\n";
+    return false;
+  }
+  return true;
+}
+
+bool ExpectCloseDouble(double actual, double expected, double tol, const char* message) {
   if (std::fabs(actual - expected) > tol) {
     std::cerr << "FAIL: " << message << " (actual=" << actual << ", expected=" << expected
               << ", diff=" << std::fabs(actual - expected) << ")\n";
@@ -207,8 +215,7 @@ bool TestLevel1Ops() {
   std::vector<float> h_y_out(kN);
   cudaMemcpy(h_y_out.data(), d_y, kN * sizeof(float), cudaMemcpyDeviceToHost);
   for (int i = 0; i < kN; ++i) {
-    const float exp =
-        alpha * h_x[static_cast<std::size_t>(i)] + h_y[static_cast<std::size_t>(i)];
+    const float exp = alpha * h_x[static_cast<std::size_t>(i)] + h_y[static_cast<std::size_t>(i)];
     if (!ExpectClose(h_y_out[static_cast<std::size_t>(i)], exp, 1e-4f, "Saxpy element")) {
       return false;
     }
@@ -331,12 +338,10 @@ bool RunSgemmCase(cublasHandle_t handle, int m, int n, int k, cublasOperation_t 
     for (int row = 0; row < m; ++row) {
       float acc = 0.0f;
       for (int p = 0; p < k; ++p) {
-        const float a_val =
-            (transa == CUBLAS_OP_N) ? h_a[static_cast<std::size_t>(row + p * lda)]
-                                    : h_a[static_cast<std::size_t>(p + row * lda)];
-        const float b_val =
-            (transb == CUBLAS_OP_N) ? h_b[static_cast<std::size_t>(p + col * ldb)]
-                                    : h_b[static_cast<std::size_t>(col + p * ldb)];
+        const float a_val = (transa == CUBLAS_OP_N) ? h_a[static_cast<std::size_t>(row + p * lda)]
+                                                    : h_a[static_cast<std::size_t>(p + row * lda)];
+        const float b_val = (transb == CUBLAS_OP_N) ? h_b[static_cast<std::size_t>(p + col * ldb)]
+                                                    : h_b[static_cast<std::size_t>(col + p * ldb)];
         acc += a_val * b_val;
       }
       const float expected = alpha * acc + beta * 2.0f;
@@ -394,7 +399,7 @@ bool TestLevel3GemmAndGeam() {
   const __half alpha16{FloatToHalfBits(1.0f)};
   const __half beta16{FloatToHalfBits(0.0f)};
   if (!Expect(cublasHgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, kM, kN, kK, &alpha16,
-                           static_cast<const __half*>(d_a16), kM, static_cast<const __half*>(d_b16),
+                          static_cast<const __half*>(d_a16), kM, static_cast<const __half*>(d_b16),
                           kK, &beta16, static_cast<__half*>(d_c16), kM) == CUBLAS_STATUS_SUCCESS,
               "cublasHgemm")) {
     return false;
@@ -455,11 +460,174 @@ bool TestLevel3GemmAndGeam() {
   return true;
 }
 
+bool TestDoublePrecisionOps() {
+  std::cout << "Testing cuBLAS double precision (FP64) operations on unified memory...\n";
+  cublasHandle_t handle = nullptr;
+  if (!Expect(cublasCreate(&handle) == CUBLAS_STATUS_SUCCESS, "cublasCreate for FP64")) {
+    return false;
+  }
+
+  // 1. Daxpy: y = alpha * x + y
+  constexpr int kN = 128;
+  std::vector<double> h_x(kN, 2.0);
+  std::vector<double> h_y(kN, 1.5);
+  double* d_x = nullptr;
+  double* d_y = nullptr;
+  cudaMalloc(reinterpret_cast<void**>(&d_x), kN * sizeof(double));
+  cudaMalloc(reinterpret_cast<void**>(&d_y), kN * sizeof(double));
+  cudaMemcpy(d_x, h_x.data(), kN * sizeof(double), cudaMemcpyHostToDevice);
+  cudaMemcpy(d_y, h_y.data(), kN * sizeof(double), cudaMemcpyHostToDevice);
+
+  const double alpha_axpy = 2.5;
+  if (!Expect(cublasDaxpy(handle, kN, &alpha_axpy, d_x, 1, d_y, 1) == CUBLAS_STATUS_SUCCESS,
+              "cublasDaxpy")) {
+    return false;
+  }
+  cudaMemcpy(h_y.data(), d_y, kN * sizeof(double), cudaMemcpyDeviceToHost);
+  for (int i = 0; i < kN; ++i) {
+    if (!ExpectCloseDouble(h_y[static_cast<std::size_t>(i)], 6.5, 1e-12, "cublasDaxpy result")) {
+      return false;
+    }
+  }
+
+  // 2. Ddot: dot(x, y) = 128 * (2.0 * 6.5) = 1664.0
+  double dot_result = 0.0;
+  if (!Expect(cublasDdot(handle, kN, d_x, 1, d_y, 1, &dot_result) == CUBLAS_STATUS_SUCCESS,
+              "cublasDdot")) {
+    return false;
+  }
+  if (!ExpectCloseDouble(dot_result, 1664.0, 1e-12, "cublasDdot result")) {
+    return false;
+  }
+
+  // 3. Dnrm2: nrm2(x) = sqrt(128 * 4.0) = sqrt(512)
+  double nrm_result = 0.0;
+  if (!Expect(cublasDnrm2(handle, kN, d_x, 1, &nrm_result) == CUBLAS_STATUS_SUCCESS,
+              "cublasDnrm2")) {
+    return false;
+  }
+  if (!ExpectCloseDouble(nrm_result, std::sqrt(512.0), 1e-12, "cublasDnrm2 result")) {
+    return false;
+  }
+
+  // 4. Dasum: sum(|x|) = 128 * 2.0 = 256.0
+  double asum_result = 0.0;
+  if (!Expect(cublasDasum(handle, kN, d_x, 1, &asum_result) == CUBLAS_STATUS_SUCCESS,
+              "cublasDasum")) {
+    return false;
+  }
+  if (!ExpectCloseDouble(asum_result, 256.0, 1e-12, "cublasDasum result")) {
+    return false;
+  }
+
+  // 5. Idamax: max index of y
+  int max_idx = 0;
+  if (!Expect(cublasIdamax(handle, kN, d_y, 1, &max_idx) == CUBLAS_STATUS_SUCCESS,
+              "cublasIdamax")) {
+    return false;
+  }
+  if (!Expect(max_idx == 1, "cublasIdamax result (1-based index)")) {
+    return false;
+  }
+
+  // 6. Dscal: x = 0.5 * x -> 1.0
+  const double alpha_scal = 0.5;
+  if (!Expect(cublasDscal(handle, kN, &alpha_scal, d_x, 1) == CUBLAS_STATUS_SUCCESS,
+              "cublasDscal")) {
+    return false;
+  }
+  cudaMemcpy(h_x.data(), d_x, kN * sizeof(double), cudaMemcpyDeviceToHost);
+  if (!ExpectCloseDouble(h_x[0], 1.0, 1e-12, "cublasDscal result")) {
+    return false;
+  }
+
+  // 7. Dgemv: y = 2.0 * A * x + 1.0 * y
+  constexpr int kM = 16;
+  constexpr int kK = 16;
+  std::vector<double> h_A(kM * kK, 1.0);
+  std::vector<double> h_vx(kK, 2.0);
+  std::vector<double> h_vy(kM, 3.0);
+  double* d_A = nullptr;
+  double* d_vx = nullptr;
+  double* d_vy = nullptr;
+  cudaMalloc(reinterpret_cast<void**>(&d_A), h_A.size() * sizeof(double));
+  cudaMalloc(reinterpret_cast<void**>(&d_vx), h_vx.size() * sizeof(double));
+  cudaMalloc(reinterpret_cast<void**>(&d_vy), h_vy.size() * sizeof(double));
+  cudaMemcpy(d_A, h_A.data(), h_A.size() * sizeof(double), cudaMemcpyHostToDevice);
+  cudaMemcpy(d_vx, h_vx.data(), h_vx.size() * sizeof(double), cudaMemcpyHostToDevice);
+  cudaMemcpy(d_vy, h_vy.data(), h_vy.size() * sizeof(double), cudaMemcpyHostToDevice);
+
+  const double alpha_gemv = 2.0;
+  const double beta_gemv = 1.0;
+  if (!Expect(cublasDgemv(handle, CUBLAS_OP_N, kM, kK, &alpha_gemv, d_A, kM, d_vx, 1, &beta_gemv,
+                          d_vy, 1) == CUBLAS_STATUS_SUCCESS,
+              "cublasDgemv")) {
+    return false;
+  }
+  cudaMemcpy(h_vy.data(), d_vy, kM * sizeof(double), cudaMemcpyDeviceToHost);
+  // Each y_i = 2.0 * (16 * 2.0) + 1.0 * 3.0 = 64.0 + 3.0 = 67.0
+  for (int i = 0; i < kM; ++i) {
+    if (!ExpectCloseDouble(h_vy[static_cast<std::size_t>(i)], 67.0, 1e-12, "cublasDgemv result")) {
+      return false;
+    }
+  }
+
+  // 8. Dgemm: C = 1.0 * A * B + 0.0 * C
+  std::vector<double> h_B(kK * kM, 3.0);
+  std::vector<double> h_C(kM * kM, 0.0);
+  double* d_B = nullptr;
+  double* d_C = nullptr;
+  cudaMalloc(reinterpret_cast<void**>(&d_B), h_B.size() * sizeof(double));
+  cudaMalloc(reinterpret_cast<void**>(&d_C), h_C.size() * sizeof(double));
+  cudaMemcpy(d_B, h_B.data(), h_B.size() * sizeof(double), cudaMemcpyHostToDevice);
+
+  const double one_d = 1.0;
+  const double zero_d = 0.0;
+  if (!Expect(cublasDgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, kM, kM, kK, &one_d, d_A, kM, d_B, kK,
+                          &zero_d, d_C, kM) == CUBLAS_STATUS_SUCCESS,
+              "cublasDgemm")) {
+    return false;
+  }
+  cudaMemcpy(h_C.data(), d_C, h_C.size() * sizeof(double), cudaMemcpyDeviceToHost);
+  // Each C_ij = 16 * (1.0 * 3.0) = 48.0
+  for (int i = 0; i < kM * kM; ++i) {
+    if (!ExpectCloseDouble(h_C[static_cast<std::size_t>(i)], 48.0, 1e-12, "cublasDgemm result")) {
+      return false;
+    }
+  }
+
+  // 9. Dgeam: C = 2.0 * A^T + 3.0 * B
+  const double alpha_geam = 2.0;
+  const double beta_geam = 3.0;
+  if (!Expect(cublasDgeam(handle, CUBLAS_OP_T, CUBLAS_OP_N, kM, kM, &alpha_geam, d_A, kM,
+                          &beta_geam, d_B, kM, d_C, kM) == CUBLAS_STATUS_SUCCESS,
+              "cublasDgeam")) {
+    return false;
+  }
+  cudaMemcpy(h_C.data(), d_C, h_C.size() * sizeof(double), cudaMemcpyDeviceToHost);
+  // Each C_ij = 2.0 * 1.0 + 3.0 * 3.0 = 11.0
+  for (int i = 0; i < kM * kM; ++i) {
+    if (!ExpectCloseDouble(h_C[static_cast<std::size_t>(i)], 11.0, 1e-12, "cublasDgeam result")) {
+      return false;
+    }
+  }
+
+  cudaFree(d_x);
+  cudaFree(d_y);
+  cudaFree(d_A);
+  cudaFree(d_vx);
+  cudaFree(d_vy);
+  cudaFree(d_B);
+  cudaFree(d_C);
+  cublasDestroy(handle);
+  return true;
+}
+
 }  // namespace
 
 int main() {
-  if (!TestHandleAndConfig() || !TestLevel1Ops() || !TestLevel2Gemv() ||
-      !TestLevel3GemmAndGeam()) {
+  if (!TestHandleAndConfig() || !TestLevel1Ops() || !TestLevel2Gemv() || !TestLevel3GemmAndGeam() ||
+      !TestDoublePrecisionOps()) {
     return 1;
   }
   std::cout << "ALL CUBLAS TESTS PASSED!\n";

@@ -5,6 +5,7 @@
  *        Apple Silicon simdgroup_matrix Metal shaders.
  */
 
+#import <Accelerate/Accelerate.h>
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 #import <MetalPerformanceShaders/MetalPerformanceShaders.h>
@@ -791,6 +792,226 @@ cublasStatus_t cublasSgeam(cublasHandle_t handle, cublasOperation_t transa,
                                     stream) == cudaSuccess)
              ? CUBLAS_STATUS_SUCCESS
              : CUBLAS_STATUS_EXECUTION_FAILED;
+}
+
+cublasStatus_t cublasDgemm_v2(cublasHandle_t handle, cublasOperation_t transa,
+                              cublasOperation_t transb, int m, int n, int k, const double* alpha,
+                              const double* A, int lda, const double* B, int ldb,
+                              const double* beta, double* C, int ldc) {
+  return cublasDgemmStridedBatched(handle, transa, transb, m, n, k, alpha, A, lda, 0, B, ldb, 0,
+                                   beta, C, ldc, 0, 1);
+}
+
+cublasStatus_t cublasDgemmStridedBatched(cublasHandle_t handle, cublasOperation_t transa,
+                                         cublasOperation_t transb, int m, int n, int k,
+                                         const double* alpha, const double* A, int lda,
+                                         long long int strideA, const double* B, int ldb,
+                                         long long int strideB, const double* beta, double* C,
+                                         int ldc, long long int strideC, int batchCount) {
+  auto ctx = LookupContext(handle);
+  if (ctx == nullptr) {
+    return CUBLAS_STATUS_NOT_INITIALIZED;
+  }
+  if (!IsValidOperation(transa) || !IsValidOperation(transb) || m < 0 || n < 0 || k < 0 ||
+      batchCount < 0 || alpha == nullptr || beta == nullptr) {
+    return CUBLAS_STATUS_INVALID_VALUE;
+  }
+  const int min_lda = (transa == CUBLAS_OP_N) ? (m > 1 ? m : 1) : (k > 1 ? k : 1);
+  const int min_ldb = (transb == CUBLAS_OP_N) ? (k > 1 ? k : 1) : (n > 1 ? n : 1);
+  const int min_ldc = (m > 1 ? m : 1);
+  if (lda < min_lda || ldb < min_ldb || ldc < min_ldc) {
+    return CUBLAS_STATUS_INVALID_VALUE;
+  }
+  if (m == 0 || n == 0 || batchCount == 0) {
+    return CUBLAS_STATUS_SUCCESS;
+  }
+
+  double alpha_val = 0.0;
+  double beta_val = 0.0;
+  if (ResolveScalarDouble(*ctx, alpha, &alpha_val) != CUBLAS_STATUS_SUCCESS ||
+      ResolveScalarDouble(*ctx, beta, &beta_val) != CUBLAS_STATUS_SUCCESS) {
+    return CUBLAS_STATUS_INVALID_VALUE;
+  }
+
+  const int a_rows = (transa == CUBLAS_OP_N) ? m : k;
+  const int a_cols = (transa == CUBLAS_OP_N) ? k : m;
+  const int b_rows = (transb == CUBLAS_OP_N) ? k : n;
+  const int b_cols = (transb == CUBLAS_OP_N) ? n : k;
+
+  const std::size_t a_mat_elems = MatrixSpanElements(a_rows, a_cols, lda);
+  const std::size_t b_mat_elems = MatrixSpanElements(b_rows, b_cols, ldb);
+  const std::size_t c_mat_elems = MatrixSpanElements(m, n, ldc);
+
+  const std::size_t a_total_elems =
+      (batchCount > 1) ? a_mat_elems + static_cast<std::size_t>(batchCount - 1) *
+                                           static_cast<std::size_t>(strideA > 0 ? strideA : 0)
+                       : a_mat_elems;
+  const std::size_t b_total_elems =
+      (batchCount > 1) ? b_mat_elems + static_cast<std::size_t>(batchCount - 1) *
+                                           static_cast<std::size_t>(strideB > 0 ? strideB : 0)
+                       : b_mat_elems;
+  const std::size_t c_total_elems =
+      (batchCount > 1) ? c_mat_elems + static_cast<std::size_t>(batchCount - 1) *
+                                           static_cast<std::size_t>(strideC > 0 ? strideC : 0)
+                       : c_mat_elems;
+
+  auto& exec = LibraryExecutor::Instance();
+  ResolvedBuffer buf_a;
+  ResolvedBuffer buf_b;
+  ResolvedBuffer buf_c;
+  if (!exec.ResolveDeviceBuffer(A, a_total_elems * sizeof(double), &buf_a) ||
+      !exec.ResolveDeviceBuffer(B, b_total_elems * sizeof(double), &buf_b) ||
+      !exec.ResolveDeviceBuffer(C, c_total_elems * sizeof(double), &buf_c)) {
+    return CUBLAS_STATUS_INVALID_VALUE;
+  }
+
+  cudaStream_t stream = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(ctx->mutex);
+    stream = ctx->stream;
+  }
+  if (exec.SynchronizeStream(stream) != cudaSuccess) {
+    return CUBLAS_STATUS_EXECUTION_FAILED;
+  }
+
+  const auto* base_a = reinterpret_cast<const double*>(
+      static_cast<const std::uint8_t*>([buf_a.buffer contents]) + buf_a.offset);
+  const auto* base_b = reinterpret_cast<const double*>(
+      static_cast<const std::uint8_t*>([buf_b.buffer contents]) + buf_b.offset);
+  auto* base_c =
+      reinterpret_cast<double*>(static_cast<std::uint8_t*>([buf_c.buffer contents]) + buf_c.offset);
+  if (base_a == nullptr || base_b == nullptr || base_c == nullptr) {
+    return CUBLAS_STATUS_MAPPING_ERROR;
+  }
+
+  const CBLAS_TRANSPOSE cblas_transa = (transa == CUBLAS_OP_N)   ? CblasNoTrans
+                                       : (transa == CUBLAS_OP_T) ? CblasTrans
+                                                                 : CblasConjTrans;
+  const CBLAS_TRANSPOSE cblas_transb = (transb == CUBLAS_OP_N)   ? CblasNoTrans
+                                       : (transb == CUBLAS_OP_T) ? CblasTrans
+                                                                 : CblasConjTrans;
+
+  for (int b = 0; b < batchCount; ++b) {
+    const double* cur_a = base_a + static_cast<std::int64_t>(b) * strideA;
+    const double* cur_b = base_b + static_cast<std::int64_t>(b) * strideB;
+    double* cur_c = base_c + static_cast<std::int64_t>(b) * strideC;
+    cblas_dgemm(CblasColMajor, cblas_transa, cblas_transb, m, n, k, alpha_val, cur_a, lda, cur_b,
+                ldb, beta_val, cur_c, ldc);
+  }
+  return CUBLAS_STATUS_SUCCESS;
+}
+
+cublasStatus_t cublasDgeam(cublasHandle_t handle, cublasOperation_t transa,
+                           cublasOperation_t transb, int m, int n, const double* alpha,
+                           const double* A, int lda, const double* beta, const double* B, int ldb,
+                           double* C, int ldc) {
+  auto ctx = LookupContext(handle);
+  if (ctx == nullptr) {
+    return CUBLAS_STATUS_NOT_INITIALIZED;
+  }
+  if (!IsValidOperation(transa) || !IsValidOperation(transb) || m < 0 || n < 0 ||
+      alpha == nullptr || beta == nullptr || C == nullptr) {
+    return CUBLAS_STATUS_INVALID_VALUE;
+  }
+  const int min_lda = (transa == CUBLAS_OP_N) ? (m > 1 ? m : 1) : (n > 1 ? n : 1);
+  const int min_ldb = (transb == CUBLAS_OP_N) ? (m > 1 ? m : 1) : (n > 1 ? n : 1);
+  const int min_ldc = (m > 1 ? m : 1);
+  if (lda < min_lda || ldb < min_ldb || ldc < min_ldc) {
+    return CUBLAS_STATUS_INVALID_VALUE;
+  }
+  if (m == 0 || n == 0) {
+    return CUBLAS_STATUS_SUCCESS;
+  }
+
+  double alpha_val = 0.0;
+  double beta_val = 0.0;
+  if (ResolveScalarDouble(*ctx, alpha, &alpha_val) != CUBLAS_STATUS_SUCCESS ||
+      ResolveScalarDouble(*ctx, beta, &beta_val) != CUBLAS_STATUS_SUCCESS) {
+    return CUBLAS_STATUS_INVALID_VALUE;
+  }
+
+  auto& exec = LibraryExecutor::Instance();
+  ResolvedBuffer buf_a;
+  ResolvedBuffer buf_b;
+  ResolvedBuffer buf_c;
+
+  const int a_rows = (transa == CUBLAS_OP_N) ? m : n;
+  const int a_cols = (transa == CUBLAS_OP_N) ? n : m;
+  const int b_rows = (transb == CUBLAS_OP_N) ? m : n;
+  const int b_cols = (transb == CUBLAS_OP_N) ? n : m;
+
+  if (!exec.ResolveDeviceBuffer(C, MatrixSpanElements(m, n, ldc) * sizeof(double), &buf_c)) {
+    return CUBLAS_STATUS_INVALID_VALUE;
+  }
+  if (alpha_val != 0.0) {
+    if (!exec.ResolveDeviceBuffer(A, MatrixSpanElements(a_rows, a_cols, lda) * sizeof(double),
+                                  &buf_a)) {
+      return CUBLAS_STATUS_INVALID_VALUE;
+    }
+  } else {
+    buf_a = buf_c;
+  }
+  if (beta_val != 0.0) {
+    if (!exec.ResolveDeviceBuffer(B, MatrixSpanElements(b_rows, b_cols, ldb) * sizeof(double),
+                                  &buf_b)) {
+      return CUBLAS_STATUS_INVALID_VALUE;
+    }
+  } else {
+    buf_b = buf_c;
+  }
+
+  cudaStream_t stream = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(ctx->mutex);
+    stream = ctx->stream;
+  }
+  if (exec.SynchronizeStream(stream) != cudaSuccess) {
+    return CUBLAS_STATUS_EXECUTION_FAILED;
+  }
+
+  const auto* a_ptr =
+      (alpha_val != 0.0)
+          ? reinterpret_cast<const double*>(
+                static_cast<const std::uint8_t*>([buf_a.buffer contents]) + buf_a.offset)
+          : nullptr;
+  const auto* b_ptr =
+      (beta_val != 0.0)
+          ? reinterpret_cast<const double*>(
+                static_cast<const std::uint8_t*>([buf_b.buffer contents]) + buf_b.offset)
+          : nullptr;
+  auto* c_ptr =
+      reinterpret_cast<double*>(static_cast<std::uint8_t*>([buf_c.buffer contents]) + buf_c.offset);
+  if (c_ptr == nullptr || (alpha_val != 0.0 && a_ptr == nullptr) ||
+      (beta_val != 0.0 && b_ptr == nullptr)) {
+    return CUBLAS_STATUS_MAPPING_ERROR;
+  }
+
+  for (int j = 0; j < n; ++j) {
+    for (int i = 0; i < m; ++i) {
+      double val = 0.0;
+      if (alpha_val != 0.0) {
+        const double a_elem =
+            (transa == CUBLAS_OP_N)
+                ? a_ptr[static_cast<std::size_t>(i) +
+                        static_cast<std::size_t>(j) * static_cast<std::size_t>(lda)]
+                : a_ptr[static_cast<std::size_t>(j) +
+                        static_cast<std::size_t>(i) * static_cast<std::size_t>(lda)];
+        val += alpha_val * a_elem;
+      }
+      if (beta_val != 0.0) {
+        const double b_elem =
+            (transb == CUBLAS_OP_N)
+                ? b_ptr[static_cast<std::size_t>(i) +
+                        static_cast<std::size_t>(j) * static_cast<std::size_t>(ldb)]
+                : b_ptr[static_cast<std::size_t>(j) +
+                        static_cast<std::size_t>(i) * static_cast<std::size_t>(ldb)];
+        val += beta_val * b_elem;
+      }
+      c_ptr[static_cast<std::size_t>(i) +
+            static_cast<std::size_t>(j) * static_cast<std::size_t>(ldc)] = val;
+    }
+  }
+  return CUBLAS_STATUS_SUCCESS;
 }
 
 }  // extern "C"

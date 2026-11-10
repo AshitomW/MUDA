@@ -27,6 +27,7 @@ struct CompileOptions {
   IntermediatePolicy intermediates = IntermediatePolicy::kRemove;
   MetalStandard metal_standard = MetalStandard::kMetal32;
   OptimizationLevel optimization = OptimizationLevel::kO3;
+  Fp64Policy fp64_policy = Fp64Policy::kOff;
   std::filesystem::path cache_dir;
   bool disable_cache = false;
   bool position_independent = false;

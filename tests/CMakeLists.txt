@@ -94,6 +94,10 @@ add_executable(nvrtc_test nvrtc_test.cpp)
 target_link_libraries(nvrtc_test PRIVATE muda::nvrtc muda::cudart cuda muda_warnings)
 add_test(NAME nvrtc_test COMMAND nvrtc_test)
 
+add_executable(fp64_test fp64_test.cpp)
+target_link_libraries(fp64_test PRIVATE muda::nvrtc muda::cudart cuda muda_warnings)
+add_test(NAME fp64_test COMMAND fp64_test)
+
 add_executable(header_hygiene_test header_hygiene_test.cpp)
 target_link_libraries(
   header_hygiene_test
