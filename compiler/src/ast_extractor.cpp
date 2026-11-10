@@ -159,13 +159,13 @@ void RemoveIdentifier(std::string& text, std::string_view identifier) {
   }
 }
 
-ParsedParameter ParseParameter(std::string_view text, std::size_t index) {
+ParsedParameter ParseParameter(std::string_view text, std::size_t index, Fp64Policy fp64_policy) {
   const std::string normalized = NormalizeSpace(text);
   if (normalized.empty()) {
-    return {.code=DiagnosticCode::kEmptyKernelParameter, .parameter={}};
+    return {.code = DiagnosticCode::kEmptyKernelParameter, .parameter = {}};
   }
   if (normalized.find("(*") != std::string::npos) {
-    return {.code=DiagnosticCode::kFunctionPointerUnsupported, .parameter={}};
+    return {.code = DiagnosticCode::kFunctionPointerUnsupported, .parameter = {}};
   }
 
   std::size_t declaration_end = normalized.size();
@@ -216,20 +216,24 @@ ParsedParameter ParseParameter(std::string_view text, std::size_t index) {
   if (!resolved_type.has_value()) {
     return {DiagnosticCode::kUnsupportedParameterType, {}};
   }
+  if (resolved_type->scalar == ScalarType::kFloat64 && fp64_policy == Fp64Policy::kOff) {
+    return {DiagnosticCode::kNativeFp64Unsupported, {}};
+  }
   parameter.type = *resolved_type;
 
   return {DiagnosticCode::kOk, std::move(parameter)};
 }
 
 DiagnosticCode ParseParameterList(std::string_view parameter_list,
-                                  std::vector<KernelParameter>* out_params) {
+                                  std::vector<KernelParameter>* out_params,
+                                  Fp64Policy fp64_policy) {
   if (out_params == nullptr) {
     return DiagnosticCode::kEmptyKernelParameter;
   }
   out_params->clear();
   const std::vector<std::string_view> slices = SplitParameters(parameter_list);
   for (std::size_t index = 0; index < slices.size(); ++index) {
-    ParsedParameter parsed = ParseParameter(slices[index], index);
+    ParsedParameter parsed = ParseParameter(slices[index], index, fp64_policy);
     if (parsed.code != DiagnosticCode::kOk) {
       return parsed.code;
     }
@@ -241,7 +245,7 @@ DiagnosticCode ParseParameterList(std::string_view parameter_list,
 namespace {
 
 DiagnosticCode ParseSharedMemoryDecl(std::string_view decl_text, bool is_extern,
-                                     mmir::SharedAllocation* out_alloc) {
+                                     mmir::SharedAllocation* out_alloc, Fp64Policy fp64_policy) {
   const std::size_t bracket_open = decl_text.find('[');
   const std::size_t bracket_close = decl_text.rfind(']');
   if (bracket_open == std::string_view::npos || bracket_close == std::string_view::npos ||
@@ -275,6 +279,9 @@ DiagnosticCode ParseSharedMemoryDecl(std::string_view decl_text, bool is_extern,
   const std::optional<DataType> elem_type = ResolveCudaType(type_str);
   if (!elem_type.has_value()) {
     return DiagnosticCode::kUnsupportedParameterType;
+  }
+  if (elem_type->scalar == ScalarType::kFloat64 && fp64_policy == Fp64Policy::kOff) {
+    return DiagnosticCode::kNativeFp64Unsupported;
   }
 
   out_alloc->name = std::string(type_and_name.substr(name_start, name_end - name_start));
@@ -367,11 +374,9 @@ struct AtomicTargetInfo {
   bool is_float = false;
 };
 
-AtomicTargetInfo ResolveAtomicTarget(
-    std::string_view addr_expr,
-    std::string_view val_expr,
-    const std::vector<mmir::SharedAllocation>* shared_allocs,
-    std::span<const KernelParameter> parameters) {
+AtomicTargetInfo ResolveAtomicTarget(std::string_view addr_expr, std::string_view val_expr,
+                                     const std::vector<mmir::SharedAllocation>* shared_allocs,
+                                     std::span<const KernelParameter> parameters) {
   const std::string_view base_id = ExtractBaseIdentifier(addr_expr);
   AtomicTargetInfo info;
 
@@ -398,10 +403,10 @@ AtomicTargetInfo ResolveAtomicTarget(
       if (param.name == base_id) {
         info.addr_space = "device";
         info.is_float = (param.type.scalar == ScalarType::kFloat32);
-        const bool is_uint = (param.type.scalar == ScalarType::kUInt32 ||
-                              param.type.scalar == ScalarType::kUInt64);
-        const bool is_64bit = (param.type.scalar == ScalarType::kInt64 ||
-                               param.type.scalar == ScalarType::kUInt64);
+        const bool is_uint =
+            (param.type.scalar == ScalarType::kUInt32 || param.type.scalar == ScalarType::kUInt64);
+        const bool is_64bit =
+            (param.type.scalar == ScalarType::kInt64 || param.type.scalar == ScalarType::kUInt64);
         info.atomic_type = is_64bit ? (is_uint ? "atomic_ulong" : "atomic_long")
                                     : (is_uint ? "atomic_uint" : "atomic_int");
         found = true;
@@ -431,7 +436,8 @@ AtomicTargetInfo ResolveAtomicTarget(
 DiagnosticCode ExtractSharedMemoryAndLowerBody(std::string_view raw_body,
                                                std::vector<mmir::SharedAllocation>* out_shared,
                                                std::string* out_lowered_body,
-                                               std::span<const KernelParameter> parameters) {
+                                               std::span<const KernelParameter> parameters,
+                                               Fp64Policy fp64_policy) {
   std::string body_without_shared;
   body_without_shared.reserve(raw_body.size());
 
@@ -468,8 +474,9 @@ DiagnosticCode ExtractSharedMemoryAndLowerBody(std::string_view raw_body,
           return DiagnosticCode::kInvalidSharedMemoryDeclaration;
 
         mmir::SharedAllocation alloc;
-        const auto diag = ParseSharedMemoryDecl(
-            Trim(raw_body.substr(after_shared, semi - after_shared)), is_extern_shared, &alloc);
+        const auto diag =
+            ParseSharedMemoryDecl(Trim(raw_body.substr(after_shared, semi - after_shared)),
+                                  is_extern_shared, &alloc, fp64_policy);
         if (diag != DiagnosticCode::kOk)
           return diag;
 
@@ -507,8 +514,21 @@ DiagnosticCode ExtractSharedMemoryAndLowerBody(std::string_view raw_body,
       if (word == unsupported)
         return DiagnosticCode::kUnsupportedConstruct;
     }
-    if (word == "double")
-      return DiagnosticCode::kUnsupportedConstruct;
+    if (word == "double" || word == "double2" || word == "double3" || word == "double4") {
+      if (fp64_policy == Fp64Policy::kOff) {
+        return DiagnosticCode::kNativeFp64Unsupported;
+      }
+      if (word == "double") {
+        result.append("muda_fp64");
+      } else if (word == "double2") {
+        result.append("muda_fp64_2");
+      } else if (word == "double3") {
+        result.append("muda_fp64_3");
+      } else if (word == "double4") {
+        result.append("muda_fp64_4");
+      }
+      continue;
+    }
 
     const std::string_view builtin_rep = BuiltinReplacement(word);
     std::size_t next = index;
@@ -617,14 +637,17 @@ DiagnosticCode ExtractSharedMemoryAndLowerBody(std::string_view raw_body,
           continue;
         }
         if (word == "__ffs" && !args.empty()) {
-          result.append("([&](auto __val) { return (__val == 0) ? 0 : static_cast<int>(ctz(__val) + 1u); }(");
+          result.append(
+              "([&](auto __val) { return (__val == 0) ? 0 : static_cast<int>(ctz(__val) + 1u); }(");
           result.append(LowerExpression(args[0]));
           result.append("))");
           index = close + 1;
           continue;
         }
         if (word == "__ffsll" && !args.empty()) {
-          result.append("([&](auto __val) { return (__val == 0ull) ? 0 : static_cast<int>(ctz(__val) + 1u); }(");
+          result.append(
+              "([&](auto __val) { return (__val == 0ull) ? 0 : static_cast<int>(ctz(__val) + 1u); "
+              "}(");
           result.append(LowerExpression(args[0]));
           result.append("))");
           index = close + 1;
@@ -704,16 +727,17 @@ DiagnosticCode ExtractSharedMemoryAndLowerBody(std::string_view raw_body,
     }
 
     if ((word == "atomicAdd" || word == "atomicSub" || word == "atomicExch" ||
-         word == "atomicMin" || word == "atomicMax" || word == "atomicAnd" ||
-         word == "atomicOr" || word == "atomicXor" || word == "atomicInc" ||
-         word == "atomicDec" || word == "atomicCAS") &&
+         word == "atomicMin" || word == "atomicMax" || word == "atomicAnd" || word == "atomicOr" ||
+         word == "atomicXor" || word == "atomicInc" || word == "atomicDec" ||
+         word == "atomicCAS") &&
         next < body.size() && body[next] == '(') {
       const std::size_t close = FindMatching(body, next, '(', ')');
       if (close != std::string_view::npos) {
         const std::string_view arg_str = body.substr(next + 1, close - next - 1);
         const std::vector<std::string_view> args = SplitParameters(arg_str);
         if (args.size() >= 2) {
-          const AtomicTargetInfo target = ResolveAtomicTarget(args[0], args[1], out_shared, parameters);
+          const AtomicTargetInfo target =
+              ResolveAtomicTarget(args[0], args[1], out_shared, parameters);
           const std::string lowered_addr = LowerExpression(args[0]);
           const std::string lowered_val = LowerExpression(args[1]);
 
@@ -725,7 +749,11 @@ DiagnosticCode ExtractSharedMemoryAndLowerBody(std::string_view raw_body,
               result.append(target.addr_space);
               result.append(" atomic_uint* __u = reinterpret_cast<");
               result.append(target.addr_space);
-              result.append(" atomic_uint*>(__a); uint __exp = atomic_load_explicit(__u, memory_order_relaxed); while (!atomic_compare_exchange_weak_explicit(__u, &__exp, as_type<uint>(as_type<float>(__exp) + __v), memory_order_relaxed, memory_order_relaxed)) {} return as_type<float>(__exp); }(");
+              result.append(
+                  " atomic_uint*>(__a); uint __exp = atomic_load_explicit(__u, "
+                  "memory_order_relaxed); while (!atomic_compare_exchange_weak_explicit(__u, "
+                  "&__exp, as_type<uint>(as_type<float>(__exp) + __v), memory_order_relaxed, "
+                  "memory_order_relaxed)) {} return as_type<float>(__exp); }(");
               result.append(lowered_addr);
               result.append(", ");
               result.append(lowered_val);
@@ -768,7 +796,9 @@ DiagnosticCode ExtractSharedMemoryAndLowerBody(std::string_view raw_body,
               result.append(target.addr_space);
               result.append(" atomic_uint* __u = reinterpret_cast<");
               result.append(target.addr_space);
-              result.append(" atomic_uint*>(__a); return as_type<float>(atomic_exchange_explicit(__u, as_type<uint>(__v), memory_order_relaxed)); }(");
+              result.append(
+                  " atomic_uint*>(__a); return as_type<float>(atomic_exchange_explicit(__u, "
+                  "as_type<uint>(__v), memory_order_relaxed)); }(");
               result.append(lowered_addr);
               result.append(", ");
               result.append(lowered_val);
@@ -870,7 +900,11 @@ DiagnosticCode ExtractSharedMemoryAndLowerBody(std::string_view raw_body,
             result.append(target.addr_space);
             result.push_back(' ');
             result.append(target.atomic_type);
-            result.append("*>(__a); auto __exp = atomic_load_explicit(__u, memory_order_relaxed); while (true) { auto __desired = (__exp >= __v) ? 0u : (__exp + 1u); if (atomic_compare_exchange_weak_explicit(__u, &__exp, __desired, memory_order_relaxed, memory_order_relaxed)) { return __exp; } } }(");
+            result.append(
+                "*>(__a); auto __exp = atomic_load_explicit(__u, memory_order_relaxed); while "
+                "(true) { auto __desired = (__exp >= __v) ? 0u : (__exp + 1u); if "
+                "(atomic_compare_exchange_weak_explicit(__u, &__exp, __desired, "
+                "memory_order_relaxed, memory_order_relaxed)) { return __exp; } } }(");
             result.append(lowered_addr);
             result.append(", ");
             result.append(lowered_val);
@@ -890,7 +924,11 @@ DiagnosticCode ExtractSharedMemoryAndLowerBody(std::string_view raw_body,
             result.append(target.addr_space);
             result.push_back(' ');
             result.append(target.atomic_type);
-            result.append("*>(__a); auto __exp = atomic_load_explicit(__u, memory_order_relaxed); while (true) { auto __desired = ((__exp == 0u) || (__exp > __v)) ? __v : (__exp - 1u); if (atomic_compare_exchange_weak_explicit(__u, &__exp, __desired, memory_order_relaxed, memory_order_relaxed)) { return __exp; } } }(");
+            result.append(
+                "*>(__a); auto __exp = atomic_load_explicit(__u, memory_order_relaxed); while "
+                "(true) { auto __desired = ((__exp == 0u) || (__exp > __v)) ? __v : (__exp - 1u); "
+                "if (atomic_compare_exchange_weak_explicit(__u, &__exp, __desired, "
+                "memory_order_relaxed, memory_order_relaxed)) { return __exp; } } }(");
             result.append(lowered_addr);
             result.append(", ");
             result.append(lowered_val);
@@ -909,7 +947,11 @@ DiagnosticCode ExtractSharedMemoryAndLowerBody(std::string_view raw_body,
               result.append(target.addr_space);
               result.append(" atomic_uint* __u = reinterpret_cast<");
               result.append(target.addr_space);
-              result.append(" atomic_uint*>(__p); uint __exp = as_type<uint>(__cmp); while (!atomic_compare_exchange_weak_explicit(__u, &__exp, as_type<uint>(__v), memory_order_relaxed, memory_order_relaxed)) { if (__exp != as_type<uint>(__cmp)) { break; } } return as_type<float>(__exp); }(");
+              result.append(
+                  " atomic_uint*>(__p); uint __exp = as_type<uint>(__cmp); while "
+                  "(!atomic_compare_exchange_weak_explicit(__u, &__exp, as_type<uint>(__v), "
+                  "memory_order_relaxed, memory_order_relaxed)) { if (__exp != "
+                  "as_type<uint>(__cmp)) { break; } } return as_type<float>(__exp); }(");
               result.append(lowered_addr);
               result.append(", ");
               result.append(lowered_cmp);
@@ -921,11 +963,15 @@ DiagnosticCode ExtractSharedMemoryAndLowerBody(std::string_view raw_body,
             }
             result.append("([&](");
             result.append(target.addr_space);
-            result.append(" auto* __p, auto __cmp, auto __v) { auto __exp = __cmp; while (!atomic_compare_exchange_weak_explicit(reinterpret_cast<");
+            result.append(
+                " auto* __p, auto __cmp, auto __v) { auto __exp = __cmp; while "
+                "(!atomic_compare_exchange_weak_explicit(reinterpret_cast<");
             result.append(target.addr_space);
             result.push_back(' ');
             result.append(target.atomic_type);
-            result.append("*>(__p), &__exp, __v, memory_order_relaxed, memory_order_relaxed)) { if (__exp != __cmp) { break; } } return __exp; }(");
+            result.append(
+                "*>(__p), &__exp, __v, memory_order_relaxed, memory_order_relaxed)) { if (__exp != "
+                "__cmp) { break; } } return __exp; }(");
             result.append(lowered_addr);
             result.append(", ");
             result.append(lowered_cmp);

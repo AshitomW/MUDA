@@ -9,6 +9,8 @@
 #include <string>
 #include <string_view>
 
+#include "muda_fp64_msl.hpp"
+
 namespace muda::compiler::mmir {
 namespace {
 
@@ -73,6 +75,48 @@ bool ModuleUsesSimdgroupMatrix(const Module& module) noexcept {
   }
   for (const KernelFunction& kernel : module.kernels) {
     if (kernel.lowered_body.find("simdgroup_") != std::string::npos) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool TypeUsesFp64(DataType type) noexcept { return type.scalar == ScalarType::kFloat64; }
+
+bool FunctionUsesFp64(const DeviceFunction& fn) noexcept {
+  if (!fn.returns_void && TypeUsesFp64(fn.return_type)) {
+    return true;
+  }
+  for (const KernelParameter& param : fn.parameters) {
+    if (TypeUsesFp64(param.type)) {
+      return true;
+    }
+  }
+  return fn.lowered_body.find("muda_fp64") != std::string::npos;
+}
+
+bool KernelUsesFp64(const KernelFunction& kernel) noexcept {
+  for (const KernelParameter& param : kernel.parameters) {
+    if (TypeUsesFp64(param.type)) {
+      return true;
+    }
+  }
+  for (const SharedAllocation& shared : kernel.shared_allocations) {
+    if (TypeUsesFp64(shared.element_type)) {
+      return true;
+    }
+  }
+  return kernel.lowered_body.find("muda_fp64") != std::string::npos;
+}
+
+bool ModuleUsesFp64(const Module& module) noexcept {
+  for (const DeviceFunction& fn : module.device_functions) {
+    if (FunctionUsesFp64(fn)) {
+      return true;
+    }
+  }
+  for (const KernelFunction& kernel : module.kernels) {
+    if (KernelUsesFp64(kernel)) {
       return true;
     }
   }
@@ -256,6 +300,10 @@ std::string EmitMslModule(const Module& module) {
     msl += "#include <metal_simdgroup_matrix>\n";
   }
   msl += "using namespace metal;\n\n";
+  if (ModuleUsesFp64(module)) {
+    msl += GetMudaFp64MslPreamble(module.fp64_policy);
+    msl.push_back('\n');
+  }
 
   for (const std::string& inc : module.includes) {
     msl += inc;
@@ -287,6 +335,10 @@ std::string EmitMslKernel(const Module& module, const KernelFunction& kernel) {
     msl += "#include <metal_simdgroup_matrix>\n";
   }
   msl += "using namespace metal;\n\n";
+  if (KernelUsesFp64(kernel) || ModuleUsesFp64(module)) {
+    msl += GetMudaFp64MslPreamble(module.fp64_policy);
+    msl.push_back('\n');
+  }
 
   for (const std::string& inc : module.includes) {
     msl += inc;

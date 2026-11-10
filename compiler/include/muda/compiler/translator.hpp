@@ -63,6 +63,11 @@ struct TranslationResult {
   }
 };
 
-[[nodiscard]] TranslationResult TranslateCudaToMsl(std::string_view source);
+struct TranslationOptions {
+  Fp64Policy fp64_policy = Fp64Policy::kOff;
+};
+
+[[nodiscard]] TranslationResult TranslateCudaToMsl(std::string_view source,
+                                                   const TranslationOptions& options = {});
 
 }  // namespace muda::compiler

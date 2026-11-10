@@ -112,28 +112,51 @@ const char* cublasGetStatusString(cublasStatus_t status);
 /* Level-1 BLAS */
 cublasStatus_t cublasSaxpy_v2(cublasHandle_t handle, int n, const float* alpha, const float* x,
                               int incx, float* y, int incy);
+cublasStatus_t cublasDaxpy_v2(cublasHandle_t handle, int n, const double* alpha, const double* x,
+                              int incx, double* y, int incy);
 cublasStatus_t cublasScopy_v2(cublasHandle_t handle, int n, const float* x, int incx, float* y,
                               int incy);
+cublasStatus_t cublasDcopy_v2(cublasHandle_t handle, int n, const double* x, int incx, double* y,
+                              int incy);
 cublasStatus_t cublasSscal_v2(cublasHandle_t handle, int n, const float* alpha, float* x, int incx);
+cublasStatus_t cublasDscal_v2(cublasHandle_t handle, int n, const double* alpha, double* x,
+                              int incx);
 cublasStatus_t cublasSswap_v2(cublasHandle_t handle, int n, float* x, int incx, float* y, int incy);
+cublasStatus_t cublasDswap_v2(cublasHandle_t handle, int n, double* x, int incx, double* y,
+                              int incy);
 cublasStatus_t cublasSdot_v2(cublasHandle_t handle, int n, const float* x, int incx, const float* y,
                              int incy, float* result);
+cublasStatus_t cublasDdot_v2(cublasHandle_t handle, int n, const double* x, int incx,
+                             const double* y, int incy, double* result);
 cublasStatus_t cublasSnrm2_v2(cublasHandle_t handle, int n, const float* x, int incx,
                               float* result);
+cublasStatus_t cublasDnrm2_v2(cublasHandle_t handle, int n, const double* x, int incx,
+                              double* result);
 cublasStatus_t cublasSasum_v2(cublasHandle_t handle, int n, const float* x, int incx,
                               float* result);
+cublasStatus_t cublasDasum_v2(cublasHandle_t handle, int n, const double* x, int incx,
+                              double* result);
 cublasStatus_t cublasIsamax_v2(cublasHandle_t handle, int n, const float* x, int incx, int* result);
+cublasStatus_t cublasIdamax_v2(cublasHandle_t handle, int n, const double* x, int incx,
+                               int* result);
 
 /* Level-2 BLAS */
 cublasStatus_t cublasSgemv_v2(cublasHandle_t handle, cublasOperation_t trans, int m, int n,
                               const float* alpha, const float* A, int lda, const float* x, int incx,
                               const float* beta, float* y, int incy);
+cublasStatus_t cublasDgemv_v2(cublasHandle_t handle, cublasOperation_t trans, int m, int n,
+                              const double* alpha, const double* A, int lda, const double* x,
+                              int incx, const double* beta, double* y, int incy);
 
 /* Level-3 BLAS */
 cublasStatus_t cublasSgemm_v2(cublasHandle_t handle, cublasOperation_t transa,
                               cublasOperation_t transb, int m, int n, int k, const float* alpha,
                               const float* A, int lda, const float* B, int ldb, const float* beta,
                               float* C, int ldc);
+cublasStatus_t cublasDgemm_v2(cublasHandle_t handle, cublasOperation_t transa,
+                              cublasOperation_t transb, int m, int n, int k, const double* alpha,
+                              const double* A, int lda, const double* B, int ldb,
+                              const double* beta, double* C, int ldc);
 
 cublasStatus_t cublasHgemm(cublasHandle_t handle, cublasOperation_t transa,
                            cublasOperation_t transb, int m, int n, int k, const __half* alpha,
@@ -152,6 +175,12 @@ cublasStatus_t cublasSgemmStridedBatched(cublasHandle_t handle, cublasOperation_
                                          long long int strideA, const float* B, int ldb,
                                          long long int strideB, const float* beta, float* C,
                                          int ldc, long long int strideC, int batchCount);
+cublasStatus_t cublasDgemmStridedBatched(cublasHandle_t handle, cublasOperation_t transa,
+                                         cublasOperation_t transb, int m, int n, int k,
+                                         const double* alpha, const double* A, int lda,
+                                         long long int strideA, const double* B, int ldb,
+                                         long long int strideB, const double* beta, double* C,
+                                         int ldc, long long int strideC, int batchCount);
 
 cublasStatus_t cublasGemmStridedBatchedEx(cublasHandle_t handle, cublasOperation_t transa,
                                           cublasOperation_t transb, int m, int n, int k,
@@ -166,6 +195,10 @@ cublasStatus_t cublasSgeam(cublasHandle_t handle, cublasOperation_t transa,
                            cublasOperation_t transb, int m, int n, const float* alpha,
                            const float* A, int lda, const float* beta, const float* B, int ldb,
                            float* C, int ldc);
+cublasStatus_t cublasDgeam(cublasHandle_t handle, cublasOperation_t transa,
+                           cublasOperation_t transb, int m, int n, const double* alpha,
+                           const double* A, int lda, const double* beta, const double* B, int ldb,
+                           double* C, int ldc);
 
 #define cublasCreate cublasCreate_v2
 #define cublasDestroy cublasDestroy_v2
@@ -175,15 +208,25 @@ cublasStatus_t cublasSgeam(cublasHandle_t handle, cublasOperation_t transa,
 #define cublasSetPointerMode cublasSetPointerMode_v2
 #define cublasGetPointerMode cublasGetPointerMode_v2
 #define cublasSaxpy cublasSaxpy_v2
+#define cublasDaxpy cublasDaxpy_v2
 #define cublasScopy cublasScopy_v2
+#define cublasDcopy cublasDcopy_v2
 #define cublasSscal cublasSscal_v2
+#define cublasDscal cublasDscal_v2
 #define cublasSswap cublasSswap_v2
+#define cublasDswap cublasDswap_v2
 #define cublasSdot cublasSdot_v2
+#define cublasDdot cublasDdot_v2
 #define cublasSnrm2 cublasSnrm2_v2
+#define cublasDnrm2 cublasDnrm2_v2
 #define cublasSasum cublasSasum_v2
+#define cublasDasum cublasDasum_v2
 #define cublasIsamax cublasIsamax_v2
+#define cublasIdamax cublasIdamax_v2
 #define cublasSgemv cublasSgemv_v2
+#define cublasDgemv cublasDgemv_v2
 #define cublasSgemm cublasSgemm_v2
+#define cublasDgemm cublasDgemm_v2
 
 #ifdef __cplusplus
 }  // extern "C"

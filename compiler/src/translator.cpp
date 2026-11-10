@@ -24,7 +24,8 @@ TranslationResult Failure(DiagnosticCode code) {
   return result;
 }
 
-DiagnosticCode PopulateDeviceFunction(const RawFunctionSlice& slice, mmir::DeviceFunction& dev_fn) {
+DiagnosticCode PopulateDeviceFunction(const RawFunctionSlice& slice, mmir::DeviceFunction& dev_fn,
+                                      Fp64Policy fp64_policy) {
   dev_fn.name = slice.name;
   if (slice.return_type == "void") {
     dev_fn.returns_void = true;
@@ -33,35 +34,41 @@ DiagnosticCode PopulateDeviceFunction(const RawFunctionSlice& slice, mmir::Devic
     if (!ret_type.has_value()) {
       return DiagnosticCode::kUnsupportedParameterType;
     }
+    if (ret_type->scalar == ScalarType::kFloat64 && fp64_policy == Fp64Policy::kOff) {
+      return DiagnosticCode::kNativeFp64Unsupported;
+    }
     dev_fn.return_type = *ret_type;
   }
 
-  const DiagnosticCode param_status = ParseParameterList(slice.parameter_list, &dev_fn.parameters);
+  const DiagnosticCode param_status =
+      ParseParameterList(slice.parameter_list, &dev_fn.parameters, fp64_policy);
   if (param_status != DiagnosticCode::kOk) {
     return param_status;
   }
 
-  return ExtractSharedMemoryAndLowerBody(slice.body, nullptr, &dev_fn.lowered_body, dev_fn.parameters);
+  return ExtractSharedMemoryAndLowerBody(slice.body, nullptr, &dev_fn.lowered_body,
+                                         dev_fn.parameters, fp64_policy);
 }
 
 DiagnosticCode PopulateKernelFunction(const RawFunctionSlice& slice,
-                                      mmir::KernelFunction& kernel_fn) {
+                                      mmir::KernelFunction& kernel_fn, Fp64Policy fp64_policy) {
   kernel_fn.name = slice.name;
   kernel_fn.msl_name = slice.name;
 
   const DiagnosticCode param_status =
-      ParseParameterList(slice.parameter_list, &kernel_fn.parameters);
+      ParseParameterList(slice.parameter_list, &kernel_fn.parameters, fp64_policy);
   if (param_status != DiagnosticCode::kOk) {
     return param_status;
   }
 
   return ExtractSharedMemoryAndLowerBody(slice.body, &kernel_fn.shared_allocations,
-                                         &kernel_fn.lowered_body, kernel_fn.parameters);
+                                         &kernel_fn.lowered_body, kernel_fn.parameters,
+                                         fp64_policy);
 }
 
 }  // namespace
 
-TranslationResult TranslateCudaToMsl(std::string_view source) {
+TranslationResult TranslateCudaToMsl(std::string_view source, const TranslationOptions& options) {
   std::vector<RawFunctionSlice> slices;
   const DiagnosticCode extract_status = ExtractFunctionsFromSource(source, &slices);
   if (extract_status != DiagnosticCode::kOk) {
@@ -69,18 +76,19 @@ TranslationResult TranslateCudaToMsl(std::string_view source) {
   }
 
   mmir::Module module;
+  module.fp64_policy = options.fp64_policy;
   ExtractIncludes(source, &module.includes);
   for (const RawFunctionSlice& slice : slices) {
     if (slice.kind == QualifierKind::kDevice) {
       mmir::DeviceFunction dev_fn;
-      const DiagnosticCode status = PopulateDeviceFunction(slice, dev_fn);
+      const DiagnosticCode status = PopulateDeviceFunction(slice, dev_fn, options.fp64_policy);
       if (status != DiagnosticCode::kOk) {
         return Failure(status);
       }
       module.device_functions.push_back(std::move(dev_fn));
     } else {
       mmir::KernelFunction kernel_fn;
-      const DiagnosticCode status = PopulateKernelFunction(slice, kernel_fn);
+      const DiagnosticCode status = PopulateKernelFunction(slice, kernel_fn, options.fp64_policy);
       if (status != DiagnosticCode::kOk) {
         return Failure(status);
       }

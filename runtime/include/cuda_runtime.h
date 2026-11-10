@@ -231,6 +231,15 @@ struct uint3 {
 struct uint4 {
   unsigned int x, y, z, w;
 };
+struct double2 {
+  double x, y;
+};
+struct double3 {
+  double x, y, z;
+};
+struct double4 {
+  double x, y, z, w;
+};
 
 static inline float2 make_float2(float x, float y) {
   float2 v;
@@ -289,6 +298,27 @@ static inline uint3 make_uint3(unsigned int x, unsigned int y, unsigned int z) {
 }
 static inline uint4 make_uint4(unsigned int x, unsigned int y, unsigned int z, unsigned int w) {
   uint4 v;
+  v.x = x;
+  v.y = y;
+  v.z = z;
+  v.w = w;
+  return v;
+}
+static inline double2 make_double2(double x, double y) {
+  double2 v;
+  v.x = x;
+  v.y = y;
+  return v;
+}
+static inline double3 make_double3(double x, double y, double z) {
+  double3 v;
+  v.x = x;
+  v.y = y;
+  v.z = z;
+  return v;
+}
+static inline double4 make_double4(double x, double y, double z, double w) {
+  double4 v;
   v.x = x;
   v.y = y;
   v.z = z;

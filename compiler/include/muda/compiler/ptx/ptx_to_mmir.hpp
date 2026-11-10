@@ -16,12 +16,14 @@ namespace muda::compiler::ptx {
 /**
  * @brief Lowers a parsed PTX Program into an MMIR Module.
  */
-[[nodiscard]] mmir::Module LowerPtxToMmir(const Program& program);
+[[nodiscard]] mmir::Module LowerPtxToMmir(const Program& program,
+                                          const TranslationOptions& options = {});
 
 /**
  * @brief End-to-end translation entry point converting PTX source into verified Metal Shading
  * Language.
  */
-[[nodiscard]] TranslationResult TranslatePtxToMsl(std::string_view ptx_source);
+[[nodiscard]] TranslationResult TranslatePtxToMsl(std::string_view ptx_source,
+                                                  const TranslationOptions& options = {});
 
 }  // namespace muda::compiler::ptx

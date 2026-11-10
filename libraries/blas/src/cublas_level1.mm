@@ -3,6 +3,7 @@
  * @brief Implementation of cuBLAS Level-1 vector operations on Apple Silicon GPUs.
  */
 
+#import <Accelerate/Accelerate.h>
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 
@@ -15,6 +16,34 @@
 
 namespace muda::libraries::blas {
 namespace {
+
+template <typename T>
+[[nodiscard]] cublasStatus_t WriteScalarOutput(const std::shared_ptr<CublasContext>& ctx,
+                                               T* result_ptr, T value) noexcept {
+  if (result_ptr == nullptr) {
+    return CUBLAS_STATUS_INVALID_VALUE;
+  }
+  cublasPointerMode_t mode = CUBLAS_POINTER_MODE_HOST;
+  {
+    std::lock_guard<std::mutex> lock(ctx->mutex);
+    mode = ctx->pointer_mode;
+  }
+  if (mode == CUBLAS_POINTER_MODE_HOST) {
+    *result_ptr = value;
+    return CUBLAS_STATUS_SUCCESS;
+  }
+  auto& exec = LibraryExecutor::Instance();
+  ResolvedBuffer dev_out;
+  if (!exec.ResolveDeviceBuffer(result_ptr, sizeof(T), &dev_out)) {
+    return CUBLAS_STATUS_INVALID_VALUE;
+  }
+  auto* dst = static_cast<std::uint8_t*>([dev_out.buffer contents]);
+  if (dst == nullptr) {
+    return CUBLAS_STATUS_MAPPING_ERROR;
+  }
+  std::memcpy(dst + dev_out.offset, &value, sizeof(T));
+  return CUBLAS_STATUS_SUCCESS;
+}
 
 [[nodiscard]] constexpr std::size_t SpanElementCount(int n, int inc) noexcept {
   if (n <= 0) {
@@ -561,6 +590,327 @@ cublasStatus_t cublasIsamax_v2(cublasHandle_t handle, int n, const float* x, int
       ShaderArg::Value(incx),
   };
   return DispatchReduction1Block<int>(ctx, "muda_cublas_isamax", args, 0, result);
+}
+
+cublasStatus_t cublasDaxpy_v2(cublasHandle_t handle, int n, const double* alpha, const double* x,
+                              int incx, double* y, int incy) {
+  auto ctx = LookupContext(handle);
+  if (ctx == nullptr) {
+    return CUBLAS_STATUS_NOT_INITIALIZED;
+  }
+  if (n <= 0) {
+    return CUBLAS_STATUS_SUCCESS;
+  }
+  double alpha_val = 0.0;
+  const cublasStatus_t s_status = ResolveScalarDouble(*ctx, alpha, &alpha_val);
+  if (s_status != CUBLAS_STATUS_SUCCESS) {
+    return s_status;
+  }
+  if (alpha_val == 0.0) {
+    return CUBLAS_STATUS_SUCCESS;
+  }
+
+  auto& exec = LibraryExecutor::Instance();
+  ResolvedBuffer buf_x;
+  ResolvedBuffer buf_y;
+  if (!exec.ResolveDeviceBuffer(x, SpanElementCount(n, incx) * sizeof(double), &buf_x) ||
+      !exec.ResolveDeviceBuffer(y, SpanElementCount(n, incy) * sizeof(double), &buf_y)) {
+    return CUBLAS_STATUS_INVALID_VALUE;
+  }
+
+  cudaStream_t stream = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(ctx->mutex);
+    stream = ctx->stream;
+  }
+  if (exec.SynchronizeStream(stream) != cudaSuccess) {
+    return CUBLAS_STATUS_EXECUTION_FAILED;
+  }
+
+  const auto* x_ptr = reinterpret_cast<const double*>(
+      static_cast<const std::uint8_t*>([buf_x.buffer contents]) + buf_x.offset);
+  auto* y_ptr =
+      reinterpret_cast<double*>(static_cast<std::uint8_t*>([buf_y.buffer contents]) + buf_y.offset);
+  if (x_ptr == nullptr || y_ptr == nullptr) {
+    return CUBLAS_STATUS_MAPPING_ERROR;
+  }
+
+  cblas_daxpy(n, alpha_val, x_ptr, incx, y_ptr, incy);
+  return CUBLAS_STATUS_SUCCESS;
+}
+
+cublasStatus_t cublasDcopy_v2(cublasHandle_t handle, int n, const double* x, int incx, double* y,
+                              int incy) {
+  auto ctx = LookupContext(handle);
+  if (ctx == nullptr) {
+    return CUBLAS_STATUS_NOT_INITIALIZED;
+  }
+  if (n <= 0) {
+    return CUBLAS_STATUS_SUCCESS;
+  }
+
+  auto& exec = LibraryExecutor::Instance();
+  ResolvedBuffer buf_x;
+  ResolvedBuffer buf_y;
+  if (!exec.ResolveDeviceBuffer(x, SpanElementCount(n, incx) * sizeof(double), &buf_x) ||
+      !exec.ResolveDeviceBuffer(y, SpanElementCount(n, incy) * sizeof(double), &buf_y)) {
+    return CUBLAS_STATUS_INVALID_VALUE;
+  }
+
+  cudaStream_t stream = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(ctx->mutex);
+    stream = ctx->stream;
+  }
+  if (exec.SynchronizeStream(stream) != cudaSuccess) {
+    return CUBLAS_STATUS_EXECUTION_FAILED;
+  }
+
+  const auto* x_ptr = reinterpret_cast<const double*>(
+      static_cast<const std::uint8_t*>([buf_x.buffer contents]) + buf_x.offset);
+  auto* y_ptr =
+      reinterpret_cast<double*>(static_cast<std::uint8_t*>([buf_y.buffer contents]) + buf_y.offset);
+  if (x_ptr == nullptr || y_ptr == nullptr) {
+    return CUBLAS_STATUS_MAPPING_ERROR;
+  }
+
+  cblas_dcopy(n, x_ptr, incx, y_ptr, incy);
+  return CUBLAS_STATUS_SUCCESS;
+}
+
+cublasStatus_t cublasDscal_v2(cublasHandle_t handle, int n, const double* alpha, double* x,
+                              int incx) {
+  auto ctx = LookupContext(handle);
+  if (ctx == nullptr) {
+    return CUBLAS_STATUS_NOT_INITIALIZED;
+  }
+  if (n <= 0 || incx <= 0) {
+    return CUBLAS_STATUS_SUCCESS;
+  }
+  double alpha_val = 0.0;
+  const cublasStatus_t s_status = ResolveScalarDouble(*ctx, alpha, &alpha_val);
+  if (s_status != CUBLAS_STATUS_SUCCESS) {
+    return s_status;
+  }
+
+  auto& exec = LibraryExecutor::Instance();
+  ResolvedBuffer buf_x;
+  if (!exec.ResolveDeviceBuffer(x, SpanElementCount(n, incx) * sizeof(double), &buf_x)) {
+    return CUBLAS_STATUS_INVALID_VALUE;
+  }
+
+  cudaStream_t stream = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(ctx->mutex);
+    stream = ctx->stream;
+  }
+  if (exec.SynchronizeStream(stream) != cudaSuccess) {
+    return CUBLAS_STATUS_EXECUTION_FAILED;
+  }
+
+  auto* x_ptr =
+      reinterpret_cast<double*>(static_cast<std::uint8_t*>([buf_x.buffer contents]) + buf_x.offset);
+  if (x_ptr == nullptr) {
+    return CUBLAS_STATUS_MAPPING_ERROR;
+  }
+
+  cblas_dscal(n, alpha_val, x_ptr, incx);
+  return CUBLAS_STATUS_SUCCESS;
+}
+
+cublasStatus_t cublasDswap_v2(cublasHandle_t handle, int n, double* x, int incx, double* y,
+                              int incy) {
+  auto ctx = LookupContext(handle);
+  if (ctx == nullptr) {
+    return CUBLAS_STATUS_NOT_INITIALIZED;
+  }
+  if (n <= 0) {
+    return CUBLAS_STATUS_SUCCESS;
+  }
+
+  auto& exec = LibraryExecutor::Instance();
+  ResolvedBuffer buf_x;
+  ResolvedBuffer buf_y;
+  if (!exec.ResolveDeviceBuffer(x, SpanElementCount(n, incx) * sizeof(double), &buf_x) ||
+      !exec.ResolveDeviceBuffer(y, SpanElementCount(n, incy) * sizeof(double), &buf_y)) {
+    return CUBLAS_STATUS_INVALID_VALUE;
+  }
+
+  cudaStream_t stream = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(ctx->mutex);
+    stream = ctx->stream;
+  }
+  if (exec.SynchronizeStream(stream) != cudaSuccess) {
+    return CUBLAS_STATUS_EXECUTION_FAILED;
+  }
+
+  auto* x_ptr =
+      reinterpret_cast<double*>(static_cast<std::uint8_t*>([buf_x.buffer contents]) + buf_x.offset);
+  auto* y_ptr =
+      reinterpret_cast<double*>(static_cast<std::uint8_t*>([buf_y.buffer contents]) + buf_y.offset);
+  if (x_ptr == nullptr || y_ptr == nullptr) {
+    return CUBLAS_STATUS_MAPPING_ERROR;
+  }
+
+  cblas_dswap(n, x_ptr, incx, y_ptr, incy);
+  return CUBLAS_STATUS_SUCCESS;
+}
+
+cublasStatus_t cublasDdot_v2(cublasHandle_t handle, int n, const double* x, int incx,
+                             const double* y, int incy, double* result) {
+  auto ctx = LookupContext(handle);
+  if (ctx == nullptr) {
+    return CUBLAS_STATUS_NOT_INITIALIZED;
+  }
+  if (result == nullptr) {
+    return CUBLAS_STATUS_INVALID_VALUE;
+  }
+  if (n <= 0) {
+    return WriteScalarOutput(ctx, result, 0.0);
+  }
+
+  auto& exec = LibraryExecutor::Instance();
+  ResolvedBuffer buf_x;
+  ResolvedBuffer buf_y;
+  if (!exec.ResolveDeviceBuffer(x, SpanElementCount(n, incx) * sizeof(double), &buf_x) ||
+      !exec.ResolveDeviceBuffer(y, SpanElementCount(n, incy) * sizeof(double), &buf_y)) {
+    return CUBLAS_STATUS_INVALID_VALUE;
+  }
+
+  cudaStream_t stream = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(ctx->mutex);
+    stream = ctx->stream;
+  }
+  if (exec.SynchronizeStream(stream) != cudaSuccess) {
+    return CUBLAS_STATUS_EXECUTION_FAILED;
+  }
+
+  const auto* x_ptr = reinterpret_cast<const double*>(
+      static_cast<const std::uint8_t*>([buf_x.buffer contents]) + buf_x.offset);
+  const auto* y_ptr = reinterpret_cast<const double*>(
+      static_cast<const std::uint8_t*>([buf_y.buffer contents]) + buf_y.offset);
+  if (x_ptr == nullptr || y_ptr == nullptr) {
+    return CUBLAS_STATUS_MAPPING_ERROR;
+  }
+
+  const double dot_res = cblas_ddot(n, x_ptr, incx, y_ptr, incy);
+  return WriteScalarOutput(ctx, result, dot_res);
+}
+
+cublasStatus_t cublasDnrm2_v2(cublasHandle_t handle, int n, const double* x, int incx,
+                              double* result) {
+  auto ctx = LookupContext(handle);
+  if (ctx == nullptr) {
+    return CUBLAS_STATUS_NOT_INITIALIZED;
+  }
+  if (result == nullptr) {
+    return CUBLAS_STATUS_INVALID_VALUE;
+  }
+  if (n <= 0 || incx <= 0) {
+    return WriteScalarOutput(ctx, result, 0.0);
+  }
+
+  auto& exec = LibraryExecutor::Instance();
+  ResolvedBuffer buf_x;
+  if (!exec.ResolveDeviceBuffer(x, SpanElementCount(n, incx) * sizeof(double), &buf_x)) {
+    return CUBLAS_STATUS_INVALID_VALUE;
+  }
+
+  cudaStream_t stream = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(ctx->mutex);
+    stream = ctx->stream;
+  }
+  if (exec.SynchronizeStream(stream) != cudaSuccess) {
+    return CUBLAS_STATUS_EXECUTION_FAILED;
+  }
+
+  const auto* x_ptr = reinterpret_cast<const double*>(
+      static_cast<const std::uint8_t*>([buf_x.buffer contents]) + buf_x.offset);
+  if (x_ptr == nullptr) {
+    return CUBLAS_STATUS_MAPPING_ERROR;
+  }
+
+  const double norm_res = cblas_dnrm2(n, x_ptr, incx);
+  return WriteScalarOutput(ctx, result, norm_res);
+}
+
+cublasStatus_t cublasDasum_v2(cublasHandle_t handle, int n, const double* x, int incx,
+                              double* result) {
+  auto ctx = LookupContext(handle);
+  if (ctx == nullptr) {
+    return CUBLAS_STATUS_NOT_INITIALIZED;
+  }
+  if (result == nullptr) {
+    return CUBLAS_STATUS_INVALID_VALUE;
+  }
+  if (n <= 0 || incx <= 0) {
+    return WriteScalarOutput(ctx, result, 0.0);
+  }
+
+  auto& exec = LibraryExecutor::Instance();
+  ResolvedBuffer buf_x;
+  if (!exec.ResolveDeviceBuffer(x, SpanElementCount(n, incx) * sizeof(double), &buf_x)) {
+    return CUBLAS_STATUS_INVALID_VALUE;
+  }
+
+  cudaStream_t stream = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(ctx->mutex);
+    stream = ctx->stream;
+  }
+  if (exec.SynchronizeStream(stream) != cudaSuccess) {
+    return CUBLAS_STATUS_EXECUTION_FAILED;
+  }
+
+  const auto* x_ptr = reinterpret_cast<const double*>(
+      static_cast<const std::uint8_t*>([buf_x.buffer contents]) + buf_x.offset);
+  if (x_ptr == nullptr) {
+    return CUBLAS_STATUS_MAPPING_ERROR;
+  }
+
+  const double asum_res = cblas_dasum(n, x_ptr, incx);
+  return WriteScalarOutput(ctx, result, asum_res);
+}
+
+cublasStatus_t cublasIdamax_v2(cublasHandle_t handle, int n, const double* x, int incx,
+                               int* result) {
+  auto ctx = LookupContext(handle);
+  if (ctx == nullptr) {
+    return CUBLAS_STATUS_NOT_INITIALIZED;
+  }
+  if (result == nullptr) {
+    return CUBLAS_STATUS_INVALID_VALUE;
+  }
+  if (n <= 0 || incx <= 0) {
+    return WriteScalarOutput(ctx, result, 0);
+  }
+
+  auto& exec = LibraryExecutor::Instance();
+  ResolvedBuffer buf_x;
+  if (!exec.ResolveDeviceBuffer(x, SpanElementCount(n, incx) * sizeof(double), &buf_x)) {
+    return CUBLAS_STATUS_INVALID_VALUE;
+  }
+
+  cudaStream_t stream = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(ctx->mutex);
+    stream = ctx->stream;
+  }
+  if (exec.SynchronizeStream(stream) != cudaSuccess) {
+    return CUBLAS_STATUS_EXECUTION_FAILED;
+  }
+
+  const auto* x_ptr = reinterpret_cast<const double*>(
+      static_cast<const std::uint8_t*>([buf_x.buffer contents]) + buf_x.offset);
+  if (x_ptr == nullptr) {
+    return CUBLAS_STATUS_MAPPING_ERROR;
+  }
+
+  const auto idx = static_cast<int>(cblas_idamax(n, x_ptr, incx)) + 1;
+  return WriteScalarOutput(ctx, result, idx);
 }
 
 }  // extern "C"

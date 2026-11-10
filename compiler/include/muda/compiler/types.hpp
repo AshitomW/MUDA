@@ -26,7 +26,39 @@ enum class ScalarType : std::uint8_t {
   kUInt64,
   kFloat16,
   kFloat32,
+  kFloat64,
 };
+
+/**
+ * @brief Policy governing 64-bit floating point (double precision) operations.
+ */
+enum class Fp64Policy : std::uint8_t {
+  kOff,
+  kFast48,
+  kIeee64,
+};
+
+[[nodiscard]] constexpr std::string_view Fp64PolicyName(Fp64Policy policy) noexcept {
+  switch (policy) {
+    case Fp64Policy::kOff:
+      return "off";
+    case Fp64Policy::kFast48:
+      return "fast48";
+    case Fp64Policy::kIeee64:
+      return "ieee64";
+  }
+  return "off";
+}
+
+[[nodiscard]] inline Fp64Policy ParseFp64Policy(std::string_view name) noexcept {
+  if (name == "fast48") {
+    return Fp64Policy::kFast48;
+  }
+  if (name == "ieee64") {
+    return Fp64Policy::kIeee64;
+  }
+  return Fp64Policy::kOff;
+}
 
 /**
  * @brief Vector lane counts supported by CUDA and MSL vector types.
@@ -174,6 +206,7 @@ enum class DiagnosticCode : std::uint8_t {
   kMetallibLinkFailed,
   kHostCompilationFailed,
   kHostLinkFailed,
+  kNativeFp64Unsupported,
 };
 
 [[nodiscard]] constexpr std::size_t ScalarByteSize(ScalarType scalar) noexcept {
@@ -192,6 +225,7 @@ enum class DiagnosticCode : std::uint8_t {
       return 4;
     case ScalarType::kInt64:
     case ScalarType::kUInt64:
+    case ScalarType::kFloat64:
       return 8;
   }
   return 0;
@@ -243,6 +277,9 @@ enum class DiagnosticCode : std::uint8_t {
       return SelectVectorSpelling(type.width, "half", "half2", "half3", "half4");
     case ScalarType::kFloat32:
       return SelectVectorSpelling(type.width, "float", "float2", "float3", "float4");
+    case ScalarType::kFloat64:
+      return SelectVectorSpelling(type.width, "muda_fp64", "muda_fp64_2", "muda_fp64_3",
+                                  "muda_fp64_4");
   }
   return "";
 }
@@ -271,6 +308,8 @@ enum class DiagnosticCode : std::uint8_t {
       return SelectVectorSpelling(type.width, "half", "half2", "half3", "half4");
     case ScalarType::kFloat32:
       return SelectVectorSpelling(type.width, "float", "float2", "float3", "float4");
+    case ScalarType::kFloat64:
+      return SelectVectorSpelling(type.width, "double", "double2", "double3", "double4");
   }
   return "";
 }
@@ -345,6 +384,8 @@ enum class DiagnosticCode : std::uint8_t {
       return "ALY-C014";
     case DiagnosticCode::kHostLinkFailed:
       return "ALY-T006";
+    case DiagnosticCode::kNativeFp64Unsupported:
+      return "ALY-C-401";
   }
   return "ALY-X000";
 }
@@ -406,6 +447,10 @@ enum class DiagnosticCode : std::uint8_t {
       return "host C++ compilation failed";
     case DiagnosticCode::kHostLinkFailed:
       return "host executable linking failed";
+    case DiagnosticCode::kNativeFp64Unsupported:
+      return "native double precision (FP64) is not supported on Apple Silicon; enable emulation "
+             "with "
+             "--muda-fp64=fast48 or MUDA_FP64=fast48";
   }
   return "unknown compiler error";
 }

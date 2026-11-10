@@ -32,6 +32,26 @@ CUresult ModuleManager::LoadPtx(std::string_view ptx_source, CUmodule* out_modul
     return CUDA_ERROR_INVALID_VALUE;
   }
 
+  muda::compiler::TranslationOptions trans_opts;
+  const char* env_fp64 = std::getenv("MUDA_FP64");
+  if (env_fp64 != nullptr && env_fp64[0] != '\0') {
+    trans_opts.fp64_policy = muda::compiler::ParseFp64Policy(env_fp64);
+  } else {
+    constexpr std::string_view kFp64PolicyMarker = "// MUDA_FP64_POLICY=";
+    const std::size_t policy_pos = ptx_source.find(kFp64PolicyMarker);
+    if (policy_pos != std::string_view::npos) {
+      const std::size_t start = policy_pos + kFp64PolicyMarker.size();
+      const std::size_t end = ptx_source.find('\n', start);
+      std::string_view policy_name = (end == std::string_view::npos)
+                                         ? ptx_source.substr(start)
+                                         : ptx_source.substr(start, end - start);
+      while (!policy_name.empty() && (policy_name.back() == '\r' || policy_name.back() == ' ')) {
+        policy_name.remove_suffix(1);
+      }
+      trans_opts.fp64_policy = muda::compiler::ParseFp64Policy(policy_name);
+    }
+  }
+
   muda::compiler::TranslationResult tr;
   const std::size_t nvrtc_pos = ptx_source.find(kNvrtcCudaMarker);
   if (nvrtc_pos != std::string_view::npos) {
@@ -39,9 +59,9 @@ CUresult ModuleManager::LoadPtx(std::string_view ptx_source, CUmodule* out_modul
     while (!cuda_src.empty() && (cuda_src.front() == '\n' || cuda_src.front() == '\r')) {
       cuda_src.remove_prefix(1);
     }
-    tr = muda::compiler::TranslateCudaToMsl(cuda_src);
+    tr = muda::compiler::TranslateCudaToMsl(cuda_src, trans_opts);
   } else {
-    tr = muda::compiler::ptx::TranslatePtxToMsl(ptx_source);
+    tr = muda::compiler::ptx::TranslatePtxToMsl(ptx_source, trans_opts);
   }
   if (!tr.ok()) {
     return CUDA_ERROR_INVALID_PTX;
@@ -56,7 +76,8 @@ CUresult ModuleManager::LoadPtx(std::string_view ptx_source, CUmodule* out_modul
     MTLCompileOptions* options = [[MTLCompileOptions alloc] init];
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
-    options.fastMathEnabled = YES;
+    options.fastMathEnabled =
+        (trans_opts.fp64_policy == muda::compiler::Fp64Policy::kOff) ? YES : NO;
 #pragma clang diagnostic pop
 
     NSError* error = nil;

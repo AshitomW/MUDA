@@ -80,6 +80,39 @@ cublasStatus_t ResolveScalarFloat(const CublasContext& ctx, const float* ptr,
   return CUBLAS_STATUS_SUCCESS;
 }
 
+cublasStatus_t ResolveScalarDouble(const CublasContext& ctx, const double* ptr,
+                                   double* out_value) noexcept {
+  if (ptr == nullptr || out_value == nullptr) {
+    return CUBLAS_STATUS_INVALID_VALUE;
+  }
+  cublasPointerMode_t mode = CUBLAS_POINTER_MODE_HOST;
+  cudaStream_t stream = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(ctx.mutex);
+    mode = ctx.pointer_mode;
+    stream = ctx.stream;
+  }
+  if (mode == CUBLAS_POINTER_MODE_HOST) {
+    *out_value = *ptr;
+    return CUBLAS_STATUS_SUCCESS;
+  }
+
+  ResolvedBuffer resolved;
+  auto& exec = LibraryExecutor::Instance();
+  if (!exec.ResolveDeviceBuffer(ptr, sizeof(double), &resolved)) {
+    return CUBLAS_STATUS_INVALID_VALUE;
+  }
+  if (exec.SynchronizeStream(stream) != cudaSuccess) {
+    return CUBLAS_STATUS_EXECUTION_FAILED;
+  }
+  const auto* base = static_cast<const std::uint8_t*>([resolved.buffer contents]);
+  if (base == nullptr) {
+    return CUBLAS_STATUS_MAPPING_ERROR;
+  }
+  std::memcpy(out_value, base + resolved.offset, sizeof(double));
+  return CUBLAS_STATUS_SUCCESS;
+}
+
 cublasStatus_t ResolveScalarHalfAsFloat(const CublasContext& ctx, const __half* ptr,
                                         float* out_value) noexcept {
   if (ptr == nullptr || out_value == nullptr) {
