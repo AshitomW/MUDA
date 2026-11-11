@@ -30,6 +30,7 @@ MUDA bridges these differences by translating CUDA C++ and PTX into MSL, providi
 - **`nvcc` Compatibility Wrapper:** Translates standard `nvcc` flags (`-shared`, `-fPIC`, `-D`, `-U`, `-I`, `-L`, `-l`, `-Xcompiler`, `-Xlinker`, `-gencode`, `-arch`, `--expt-relaxed-constexpr`) so standard build tools (CMake, `setuptools`, PyTorch) can use MUDA as a drop-in compiler.
 - **Muda Metal Intermediate Representation (MMIR):** Validates kernel signatures, parameter bindings, access qualifiers, and shared memory allocations before emitting MSL.
 - **Content-Addressed Build Cache:** Avoids redundant recompilation by caching artifacts based on source hashes, macro states, and compiler flags.
+- **Zero-Toolchain JIT Resiliency:** Allows compilation and execution on macOS developer environments with only Xcode Command Line Tools installed by embedding MSL source into compiled artifacts and dynamically creating pipeline states via `mudaRegisterKernelFromSource` when offline Metal bytecode tools (`xcrun metal` / `xcrun metallib`) are absent.
 - **Standard `CUDA_HOME` Layout:** Builds a familiar directory structure (`bin/`, `include/`, `lib/`) containing `nvcc`, `mudac`, clean-room headers, and library symlinks.
 
 ### 2. PTX Translation Engine
@@ -296,7 +297,7 @@ ext = compile_cuda_extension(
 
 ## Verification & Testing
 
-MUDA includes 32 automated test suites executed via CTest, covering:
+MUDA includes 34 automated test suites executed via CTest, covering:
 
 | Category | Tests | Description |
 |---|---|---|

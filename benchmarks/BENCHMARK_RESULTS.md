@@ -2,8 +2,6 @@
 
 This document records the complete statistical benchmark results for **MUDA** (Metal Unified Device Architecture) across the core CUDA Runtime/Driver engine, Memory Subsystem, Compiler/NVRTC JIT pipeline, and GPU Acceleration Libraries (`cuBLAS`, `cuFFT`, `cuDNN`, `cuSPARSE`, `cuRAND`).
 
-> **Benchmark Recording Policy:** In accordance with `AGENTS.md` (Prime Directive #12), recorded benchmark metrics are maintained monotonically as high-water marks. Values are updated **only** when a benchmark run demonstrates improved performance (higher throughput/bandwidth/compute or lower latency); runs with transient decreases or fluctuations do not overwrite peak records.
-
 ---
 
 ## 1. Test Environment & Hardware Specifications
