@@ -19,8 +19,9 @@ LIBCUBLAS_PATH = os.environ.get("CUBLAS_LIBRARY", os.path.join(REPO_ROOT, "build
 LIBCUFFT_PATH = os.environ.get("CUFFT_LIBRARY", os.path.join(REPO_ROOT, "build", "libraries", "libcufft.dylib"))
 LIBCUDNN_PATH = os.environ.get("CUDNN_LIBRARY", os.path.join(REPO_ROOT, "build", "libraries", "libcudnn.dylib"))
 LIBCUSPARSE_PATH = os.environ.get("CUSPARSE_LIBRARY", os.path.join(REPO_ROOT, "build", "libraries", "libcusparse.dylib"))
+LIBCURAND_PATH = os.environ.get("CURAND_LIBRARY", os.path.join(REPO_ROOT, "build", "libraries", "libcurand.dylib"))
 
-for p in (LIBCUDA_PATH, LIBCUBLAS_PATH, LIBCUFFT_PATH, LIBCUDNN_PATH, LIBCUSPARSE_PATH):
+for p in (LIBCUDA_PATH, LIBCUBLAS_PATH, LIBCUFFT_PATH, LIBCUDNN_PATH, LIBCUSPARSE_PATH, LIBCURAND_PATH):
     if not os.path.exists(p):
         print(f"Error: Library not found at {p}")
         sys.exit(1)
@@ -30,6 +31,7 @@ cublas = ctypes.CDLL(LIBCUBLAS_PATH)
 cufft = ctypes.CDLL(LIBCUFFT_PATH)
 cudnn = ctypes.CDLL(LIBCUDNN_PATH)
 cusparse = ctypes.CDLL(LIBCUSPARSE_PATH)
+curand = ctypes.CDLL(LIBCURAND_PATH)
 
 CUdeviceptr = c_ulonglong
 
@@ -268,12 +270,50 @@ def test_cusparse():
     print("  [PASS] libcusparse.dylib verified.")
 
 
+def test_curand():
+    print("[TEST] Testing libcurand.dylib via ctypes...")
+    curand.curandCreateGenerator.argtypes = [POINTER(c_void_p), c_int]
+    curand.curandCreateGenerator.restype = c_int
+    curand.curandDestroyGenerator.argtypes = [c_void_p]
+    curand.curandDestroyGenerator.restype = c_int
+    curand.curandSetPseudoRandomGeneratorSeed.argtypes = [c_void_p, c_ulonglong]
+    curand.curandSetPseudoRandomGeneratorSeed.restype = c_int
+    curand.curandGenerateUniform.argtypes = [c_void_p, c_void_p, c_size_t]
+    curand.curandGenerateUniform.restype = c_int
+    curand.curandGenerateNormal.argtypes = [c_void_p, c_void_p, c_size_t, c_float, c_float]
+    curand.curandGenerateNormal.restype = c_int
+
+    gen = c_void_p()
+    check(curand.curandCreateGenerator(byref(gen), 100), "curandCreateGenerator")
+    check(curand.curandSetPseudoRandomGeneratorSeed(gen, 12345), "curandSetPseudoRandomGeneratorSeed")
+
+    n = 16384
+    h_out = np.zeros(n, dtype=np.float32)
+    d_out = CUdeviceptr()
+    check(cuda.cuMemAlloc(byref(d_out), h_out.nbytes), "cuMemAlloc curand")
+
+    check(curand.curandGenerateUniform(gen, c_void_p(d_out.value), n), "curandGenerateUniform")
+    check(cuda.cuMemcpyDtoH(h_out.ctypes.data, d_out, h_out.nbytes), "DtoH uniform")
+    assert np.all(h_out > 0.0) and np.all(h_out <= 1.0)
+    assert np.abs(np.mean(h_out) - 0.5) < 0.03
+
+    check(curand.curandGenerateNormal(gen, c_void_p(d_out.value), n, c_float(0.0), c_float(1.0)), "curandGenerateNormal")
+    check(cuda.cuMemcpyDtoH(h_out.ctypes.data, d_out, h_out.nbytes), "DtoH normal")
+    assert np.abs(np.mean(h_out)) < 0.05
+    assert np.abs(np.var(h_out) - 1.0) < 0.1
+
+    cuda.cuMemFree(d_out)
+    check(curand.curandDestroyGenerator(gen), "curandDestroyGenerator")
+    print("  [PASS] libcurand.dylib verified.")
+
+
 def main():
     check(cuda.cuInit(0), "cuInit")
     test_cublas()
     test_cufft()
     test_cudnn()
     test_cusparse()
+    test_curand()
     print("\nALL CUDA ACCELERATION LIBRARIES C-ABI TESTS PASSED!\n")
 
 

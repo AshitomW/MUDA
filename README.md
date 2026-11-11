@@ -78,6 +78,10 @@ MUDA bridges these differences by translating CUDA C++ and PTX into MSL, providi
 - **cuSPARSE (`libcusparse.dylib`):**
   - CSR sparse matrix descriptors (0-based and 1-based indexing).
   - Sparse matrix-vector (`cusparseSpMV`, FP32/FP16) and sparse matrix-matrix (`cusparseSpMM`, FP32) multiplication.
+- **cuRAND (`libcurand.dylib`):**
+  - High-throughput pseudorandom number generation via vectorized 128-bit Philox4x32-10 GPU compute shaders.
+  - Uniform float `(0, 1]`, Box-Muller Gaussian normal, log-normal, and Poisson distributions.
+  - Stream binding, seed and offset determinism, and Apple Silicon unified-memory CPU fallback for double-precision generations (`curandGenerateUniformDouble`, `curandGenerateNormalDouble`).
 - **NVRTC (`libnvrtc.dylib`):**
   - Runtime compilation of CUDA C++ strings directly into Metal pipelines via `nvrtcCreateProgram`, `nvrtcCompileProgram`, and `nvrtcGetPTX`.
 
@@ -297,10 +301,10 @@ MUDA includes 32 automated test suites executed via CTest, covering:
 | Category | Tests | Description |
 |---|---|---|
 | **Language & Primitives** | `vector_add_test`, `warp_intrinsics_test`, `atomics_test`, `half_vector_test` | Shuffle, ballot, 32/64-bit atomics, float CAS, FP16 vectors |
-| **Numerical Parity** | `corpus_test` | 30 numerical parity kernels comparing Metal output against CPU reference results across linear algebra, stencils, and reductions |
+| **Numerical Parity & Emulation** | `corpus_test`, `fp64_test` | 30 numerical parity kernels comparing Metal output against CPU reference results, plus double-precision FP64 emulation (Fast48 & IEEE-754 bitfields) |
 | **Compiler & PTX** | `compiler_test`, `ptx_lexer_test`, `ptx_parser_test`, `ptx_to_mmir_test`, `compiler_cache_test` | AST rewriting, PTX shift-reduce parsing, CFG relooper, and content cache |
 | **Runtime & Driver** | `cuda_runtime_test`, `driver_api_test`, `buffer_pool_test`, `numba_mock_test` | Unified memory, streams, events, buffer pool reuse, and in-memory module loading |
-| **Acceleration Libraries** | `cublas_test`, `cufft_test`, `cudnn_test`, `cusparse_test`, `nvrtc_test` | cuBLAS GEMM, cuFFT 1D/2D transforms, cuDNN convolutions/activations, cuSPARSE SpMV/SpMM, and NVRTC compilation |
+| **Acceleration Libraries** | `cublas_test`, `cufft_test`, `cudnn_test`, `cusparse_test`, `curand_test`, `nvrtc_test` | cuBLAS GEMM, cuFFT 1D/2D transforms, cuDNN convolutions/activations, cuSPARSE SpMV/SpMM, cuRAND Philox RNG, and NVRTC compilation |
 | **Integration & Tooling** | `header_hygiene_test`, `muda_cli_test`, `python_*_test` | CLI commands, Python ctypes ABI, Numba CUDA execution, and PyTorch extensions |
 
 To run the full suite:
@@ -322,7 +326,7 @@ A dedicated benchmark suite is available under `benchmarks/runtime_bench` to mea
 # Or run specific benchmark categories
 ./build/benchmarks/runtime_bench --micro        # CPU enqueue latency, dispatch overhead, event timing
 ./build/benchmarks/runtime_bench --throughput   # Streaming memory bandwidth, GEMM compute throughput
-./build/benchmarks/runtime_bench --libraries    # cuBLAS, cuFFT, cuDNN, and cuSPARSE throughput
+./build/benchmarks/runtime_bench --libraries    # cuBLAS, cuFFT, cuDNN, cuSPARSE, and cuRAND throughput
 ```
 
 ---
@@ -333,7 +337,7 @@ Bug reports, test cases, and pull requests are welcome. When submitting changes:
 
 1. Ensure code compiles cleanly with `-Wall -Wextra -Wpedantic -Wshadow -Wconversion` without warnings.
 2. Format code with `clang-format` before opening a pull request.
-3. Verify that all 32 test suites pass:
+3. Verify that all 34 test suites pass:
    ```bash
    ctest --test-dir build --output-on-failure
    ```

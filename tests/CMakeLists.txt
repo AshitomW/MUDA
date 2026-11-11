@@ -94,6 +94,10 @@ add_executable(nvrtc_test nvrtc_test.cpp)
 target_link_libraries(nvrtc_test PRIVATE muda::nvrtc muda::cudart cuda muda_warnings)
 add_test(NAME nvrtc_test COMMAND nvrtc_test)
 
+add_executable(curand_test curand_test.cpp)
+target_link_libraries(curand_test PRIVATE muda::curand cuda muda_warnings)
+add_test(NAME curand_test COMMAND curand_test)
+
 add_executable(fp64_test fp64_test.cpp)
 target_link_libraries(fp64_test PRIVATE muda::nvrtc muda::cudart cuda muda_warnings)
 add_test(NAME fp64_test COMMAND fp64_test)
@@ -107,6 +111,7 @@ target_link_libraries(
     muda::cufft
     muda::cudnn
     muda::cusparse
+    muda::curand
     muda::nvrtc
     muda_warnings
 )
@@ -117,7 +122,7 @@ target_include_directories(
 )
 add_test(NAME header_hygiene_test COMMAND header_hygiene_test)
 
-set_tests_properties(compiler_test vector_add_test corpus_test warp_intrinsics_test atomics_test half_vector_test PROPERTIES SKIP_RETURN_CODE 77)
+set_tests_properties(compiler_test compiler_cache_test vector_add_test corpus_test warp_intrinsics_test atomics_test half_vector_test PROPERTIES SKIP_RETURN_CODE 77)
 
 add_test(NAME mudac_version COMMAND mudac --version)
 add_test(NAME nvcc_version COMMAND nvcc --version)

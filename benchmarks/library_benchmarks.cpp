@@ -17,6 +17,7 @@
 #include "cuda_runtime.h"
 #include "cudnn.h"
 #include "cufft.h"
+#include "curand.h"
 #include "cusparse.h"
 #include "muda/compiler/translator.hpp"
 #include "nvrtc.h"
@@ -581,6 +582,43 @@ __global__ void saxpy_jit(float a, const float* x, float* y, int n) {
         []() {});
     record("6. Compiler & NVRTC JIT Suite", "nvrtcCompileProgram (Full NVRTC JIT Pipeline)",
            "CPU Wall-Clock", "us", jit_cfg, nvrtc_sec.Transform([](double s) { return s * 1e6; }));
+  }
+
+  // =========================================================================
+  // 7. cuRAND Random Number Generation Suite
+  // =========================================================================
+  {
+    constexpr std::size_t kRandN = 16 * 1024 * 1024;  // 16M floats (64 MiB)
+    float* d_rand = nullptr;
+    if (cudaMalloc(reinterpret_cast<void**>(&d_rand), kRandN * sizeof(float)) == cudaSuccess) {
+      curandGenerator_t gen = nullptr;
+      if (curandCreateGenerator(&gen, CURAND_RNG_PSEUDO_DEFAULT) == CURAND_STATUS_SUCCESS) {
+        (void)curandSetPseudoRandomGeneratorSeed(gen, 12345ull);
+
+        BenchmarkConfig rand_cfg = base_config;
+        rand_cfg.warmup_iterations = 5;
+        rand_cfg.samples = 20;
+        rand_cfg.iterations_per_sample = 5;
+
+        const auto uniform_sec = MeasureGpuDuration(
+            rand_cfg, [&]() { (void)curandGenerateUniform(gen, d_rand, kRandN); });
+        const double bytes = static_cast<double>(kRandN * sizeof(float));
+        record("7. cuRAND Random Number Suite", "curandGenerateUniform (16M floats, Philox4x32)",
+               "GPU Kernel Execution", "GB/s", rand_cfg, uniform_sec.Transform([bytes](double s) {
+                 return (bytes / s) / (1024.0 * 1024.0 * 1024.0);
+               }));
+
+        const auto normal_sec = MeasureGpuDuration(
+            rand_cfg, [&]() { (void)curandGenerateNormal(gen, d_rand, kRandN, 0.0f, 1.0f); });
+        record("7. cuRAND Random Number Suite", "curandGenerateNormal (16M floats, Box-Muller)",
+               "GPU Kernel Execution", "GB/s", rand_cfg, normal_sec.Transform([bytes](double s) {
+                 return (bytes / s) / (1024.0 * 1024.0 * 1024.0);
+               }));
+
+        (void)curandDestroyGenerator(gen);
+      }
+      (void)cudaFree(d_rand);
+    }
   }
 
   return out;

@@ -360,7 +360,8 @@ void StubGemmRegisterTiled() {}
 void StubGemmMultistage() {}
 
 bool RegisterTranslatedKernel(const void* stub, const std::filesystem::path& metallib_path,
-                              const muda::compiler::TranslatedKernel& kernel) {
+                              const muda::compiler::TranslatedKernel& kernel,
+                              std::string_view msl_source = {}) {
   std::vector<mudaKernelParamDesc> descs;
   descs.reserve(kernel.parameters.size());
   for (const muda::compiler::KernelParameter& param : kernel.parameters) {
@@ -369,8 +370,13 @@ bool RegisterTranslatedKernel(const void* stub, const std::filesystem::path& met
         .size = param.byte_size(),
     });
   }
-  return mudaRegisterKernelFromFile(stub, metallib_path.string().c_str(), kernel.name.c_str(),
-                                    descs.data(), descs.size()) == cudaSuccess;
+  if (!metallib_path.empty() && std::filesystem::exists(metallib_path)) {
+    return mudaRegisterKernelFromFile(stub, metallib_path.string().c_str(), kernel.name.c_str(),
+                                      descs.data(), descs.size()) == cudaSuccess;
+  }
+  const std::string_view msl = !kernel.msl.empty() ? kernel.msl : msl_source;
+  return mudaRegisterKernelFromSource(stub, msl.data(), msl.size(), kernel.name.c_str(),
+                                      descs.data(), descs.size()) == cudaSuccess;
 }
 
 }  // namespace
@@ -408,9 +414,8 @@ int main(int argc, char* argv[]) {
   }
 
   int device_count = 0;
-  if (cudaGetDeviceCount(&device_count) != cudaSuccess || device_count <= 0 ||
-      !muda::compiler::MetalToolchainAvailable()) {
-    std::fprintf(stderr, "Metal GPU or Metal toolchain unavailable; skipping benchmark.\n");
+  if (cudaGetDeviceCount(&device_count) != cudaSuccess || device_count <= 0) {
+    std::fprintf(stderr, "Metal GPU unavailable; skipping benchmark.\n");
     return 0;
   }
 
@@ -443,31 +448,34 @@ int main(int argc, char* argv[]) {
     return EXIT_FAILURE;
   }
 
-  muda::compiler::CompileOptions options{};
-  options.input = cu_path;
-  options.output = metallib_path;
-  options.output_kind = muda::compiler::OutputKind::kMetallib;
+  if (muda::compiler::MetalToolchainAvailable()) {
+    muda::compiler::CompileOptions options{};
+    options.input = cu_path;
+    options.output = metallib_path;
+    options.output_kind = muda::compiler::OutputKind::kMetallib;
 
-  const muda::compiler::CompileResult compiled = muda::compiler::Compile(options);
-  if (compiled.status != muda::compiler::Status::kOk) {
-    std::fprintf(stderr, "Benchmark kernel compilation failed.\n");
-    return EXIT_FAILURE;
+    const muda::compiler::CompileResult compiled = muda::compiler::Compile(options);
+    if (compiled.status != muda::compiler::Status::kOk) {
+      std::fprintf(stderr, "Benchmark kernel compilation failed.\n");
+      return EXIT_FAILURE;
+    }
   }
 
+  const std::string_view full_msl = tr.msl;
   if (!RegisterTranslatedKernel(reinterpret_cast<const void*>(&StubNoop), metallib_path,
-                                tr.kernels[0]) ||
+                                tr.kernels[0], full_msl) ||
       !RegisterTranslatedKernel(reinterpret_cast<const void*>(&StubVectorAdd), metallib_path,
-                                tr.kernels[1]) ||
+                                tr.kernels[1], full_msl) ||
       !RegisterTranslatedKernel(reinterpret_cast<const void*>(&StubVectorAddFloat4), metallib_path,
-                                tr.kernels[2]) ||
+                                tr.kernels[2], full_msl) ||
       !RegisterTranslatedKernel(reinterpret_cast<const void*>(&StubVectorAddFloat4x2),
-                                metallib_path, tr.kernels[3]) ||
+                                metallib_path, tr.kernels[3], full_msl) ||
       !RegisterTranslatedKernel(reinterpret_cast<const void*>(&StubGemmTiled), metallib_path,
-                                tr.kernels[4]) ||
+                                tr.kernels[4], full_msl) ||
       !RegisterTranslatedKernel(reinterpret_cast<const void*>(&StubGemmRegisterTiled),
-                                metallib_path, tr.kernels[5]) ||
+                                metallib_path, tr.kernels[5], full_msl) ||
       !RegisterTranslatedKernel(reinterpret_cast<const void*>(&StubGemmMultistage), metallib_path,
-                                tr.kernels[6])) {
+                                tr.kernels[6], full_msl)) {
     std::fprintf(stderr, "Benchmark kernel registration failed.\n");
     return EXIT_FAILURE;
   }

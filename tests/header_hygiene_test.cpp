@@ -12,6 +12,7 @@
 #include "cuda_runtime_api.h"
 #include "cudnn.h"
 #include "cufft.h"
+#include "curand.h"
 #include "cusparse.h"
 #include "device_launch_parameters.h"
 #include "muda/compiler/cache.hpp"
