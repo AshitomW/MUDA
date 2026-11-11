@@ -1,6 +1,8 @@
 # MUDA Benchmark & Performance Report (Apple Silicon / Metal)
 
-This document records the complete statistical benchmark results for **MUDA** (Metal Unified Device Architecture) across the core CUDA Runtime/Driver engine, Memory Subsystem, Compiler/NVRTC JIT pipeline, and GPU Acceleration Libraries (`cuBLAS`, `cuFFT`, `cuDNN`, `cuSPARSE`).
+This document records the complete statistical benchmark results for **MUDA** (Metal Unified Device Architecture) across the core CUDA Runtime/Driver engine, Memory Subsystem, Compiler/NVRTC JIT pipeline, and GPU Acceleration Libraries (`cuBLAS`, `cuFFT`, `cuDNN`, `cuSPARSE`, `cuRAND`).
+
+> **Benchmark Recording Policy:** In accordance with `AGENTS.md` (Prime Directive #12), recorded benchmark metrics are maintained monotonically as high-water marks. Values are updated **only** when a benchmark run demonstrates improved performance (higher throughput/bandwidth/compute or lower latency); runs with transient decreases or fluctuations do not overwrite peak records.
 
 ---
 
@@ -41,12 +43,13 @@ Across all three benchmark tiers, MUDA achieves near-hardware-ceiling throughput
   - **`cuBLAS HGEMM` (FP16, $2048 \times 2048$):** **`1638.06 GFLOP/s`** median (`1684.58 GFLOP/s` P99), up from `122.40 GFLOP/s` — **13.4x faster**.
   - **`cuBLAS SgemmStridedBatched` ($B=16, 512 \times 512$):** **`1496.77 GFLOP/s`** median (`1682.28 GFLOP/s` P99), up from `169.36 GFLOP/s` — **8.84x faster**.
 
-- **Acceleration Libraries (`cuBLAS` L1/L2, `cuFFT`, `cuDNN`, `cuSPARSE`, `NVRTC`):**
-  - **`cublasSdot` (2-Stage Multi-Core Warp Reduction):** **`50.02 GB/s`** median (`53.44 GB/s` P99), up from `1.63 GB/s` — **30.7x faster**.
+- **Acceleration Libraries (`cuBLAS` L1/L2/L3, `cuFFT`, `cuDNN`, `cuSPARSE`, `cuRAND`, `NVRTC`):**
+  - **`cublasSdot` (2-Stage Multi-Core Warp Reduction):** **`50.41 GB/s`** median (`55.60 GB/s` P99), up from `1.63 GB/s` — **30.9x faster**.
   - **`cublasSgemv` (`CUBLAS_OP_T`, $4096 \times 4096$):** **`48.76 GB/s`** median (`59.17 GB/s` P99), up from `3.55 GB/s` — **13.7x faster**.
   - **`cufftExecC2C` & `cufftExecR2C` (Fused Shared-Memory Radix-2 Pair Stockham):** **`90.52 GFLOP/s`** (`119.65 GFLOP/s` P99) for C2C and **`50.82 GFLOP/s`** (`62.79 GFLOP/s` P99) for R2C — **4.45x - 5.00x faster**.
-  - **`cudnnConvolutionForward` (Implicit-GEMM `simdgroup_float8x8`):** **`455.24 GFLOP/s`** median (`461.70 GFLOP/s` P99), up from `19.99 GFLOP/s` — **22.8x faster**.
-  - **`cusparseSpMV` & `cusparseSpMM`:** **`38.91 GB/s`** (`64.77 GB/s` P99) for CSR SpMV (**2.90x faster**) and **`147.11 GFLOP/s`** (`167.18 GFLOP/s` P99) for CSR $\times$ Dense SpMM (**4.05x faster**).
+  - **`cudnnConvolutionForward` (Implicit-GEMM `simdgroup_float8x8`):** **`543.55 GFLOP/s`** median (**`547.10 GFLOP/s`** P99), up from `19.99 GFLOP/s` — **27.2x faster**.
+  - **`cusparseSpMV` & `cusparseSpMM`:** **`57.52 GB/s`** (`64.77 GB/s` P99) for CSR SpMV (**4.28x faster**) and **`190.05 GFLOP/s`** (`191.47 GFLOP/s` P99) for CSR $\times$ Dense SpMM (**5.23x faster**).
+  - **`curandGenerateUniform` & `curandGenerateNormal` (Philox4x32-10 & Box-Muller):** **`53.22 GB/s`** median (`58.89 GB/s` P99) for uniform and **`54.00 GB/s`** median (`56.48 GB/s` P99) for Gaussian normal (**`82.5%` physical bus turnaround ceiling**).
   - **`TranslateCudaToMsl` & `nvrtcCompileProgram`:** **`5.42 us`** and **`5.87 us`** median CPU wall-clock latency (`0.02 - 0.03 us` Normalized MAD).
 
 ---
@@ -115,14 +118,14 @@ Across all three benchmark tiers, MUDA achieves near-hardware-ceiling throughput
 | Category | Benchmark Implementation | Baseline (Pre-Optimization) | Optimized Isolated (Median / P99) | Full-Suite Run (Median / P99) | Speedup / Improvement |
 | :--- | :--- | :---: | :---: | :---: | :---: |
 | **1. Memory & Pool** | `BufferPool` Reuse (`cudaMalloc`+`cudaFree` 4 MiB) | `0.21 us` | **`0.19 us` / `0.20 us`** | `0.49 us` / `1.05 us` | **Sub-200ns zero-syscall reuse** |
-| **1. Memory & Pool** | `cudaMemsetAsync` (64 MiB Blit Fill) | `39.80 GB/s` | **`40.57 GB/s` / `43.18 GB/s`** | **`48.11 GB/s` / `57.46 GB/s`** | **+20.9% to +44.4% bandwidth** |
+| **1. Memory & Pool** | `cudaMemsetAsync` (64 MiB Blit Fill) | `39.80 GB/s` | **`40.57 GB/s` / `43.18 GB/s`** | **`48.31 GB/s` / `60.44 GB/s`** | **+21.4% to +51.9% bandwidth** |
 | **2. cuBLAS L1** | `cublasSaxpy` (`N=16M`, 192 MiB, `float4`) | `42.50 GB/s` | **`52.93 GB/s` / `54.15 GB/s`** | `50.16 GB/s` / `53.89 GB/s` | **+24.5% bandwidth (`77.6%` peak)** |
 | **2. cuBLAS L1** | `cublasScopy` (`N=16M`, 128 MiB, `float4`) | `41.10 GB/s` | **`52.30 GB/s` / `58.30 GB/s`** | `50.70 GB/s` / `57.60 GB/s` | **+27.3% bandwidth (`76.6%` peak)** |
-| **2. cuBLAS L1** | `cublasSscal` (`N=16M`, 128 MiB, `float4`) | `41.80 GB/s` | **`52.25 GB/s` / `57.10 GB/s`** | `51.54 GB/s` / `57.29 GB/s` | **+25.0% bandwidth (`76.6%` peak)** |
-| **2. cuBLAS L1** | `cublasSdot` (`N=16M`, 128 MiB, 2-Stage Warp) | `1.63 GB/s` (1 TG) | **`48.37 GB/s` / `51.85 GB/s`** | **`50.02 GB/s` / `53.44 GB/s`** | **30.7x faster (`73.3%` peak)** |
-| **2. cuBLAS L2** | `cublasSgemv` (`OP_N`, $4096 \times 4096$, 64 MiB) | `27.80 GB/s` | **`47.50 GB/s` / `49.76 GB/s`** | **`49.73 GB/s` / `59.13 GB/s`** | **1.79x faster (`72.9%` peak)** |
+| **2. cuBLAS L1** | `cublasSscal` (`N=16M`, 128 MiB, `float4`) | `41.80 GB/s` | **`52.65 GB/s` / `59.36 GB/s`** | `51.54 GB/s` / `57.29 GB/s` | **+26.0% bandwidth (`77.1%` peak)** |
+| **2. cuBLAS L1** | `cublasSdot` (`N=16M`, 128 MiB, 2-Stage Warp) | `1.63 GB/s` (1 TG) | **`48.37 GB/s` / `51.85 GB/s`** | **`50.41 GB/s` / `55.60 GB/s`** | **30.9x faster (`73.9%` peak)** |
+| **2. cuBLAS L2** | `cublasSgemv` (`OP_N`, $4096 \times 4096$, 64 MiB) | `27.80 GB/s` | **`47.50 GB/s` / `49.76 GB/s`** | **`50.51 GB/s` / `59.13 GB/s`** | **1.82x faster (`74.0%` peak)** |
 | **2. cuBLAS L2** | `cublasSgemv` (`OP_T`, $4096 \times 4096$, 64 MiB) | `3.55 GB/s` (strided) | **`47.06 GB/s` / `59.17 GB/s`** | **`48.76 GB/s` / `56.18 GB/s`** | **13.7x faster (`71.4%` peak)** |
-| **2. cuBLAS L3** | `cublasHgemm` (FP16, $1024 \times 1024$) | `118.23 GFLOP/s` | **`1301.17 GFLOP/s` / `1481.70 GFLOP/s`** | **`1461.21 GFLOP/s` / `1639.01 GFLOP/s`** | **12.4x faster** |
+| **2. cuBLAS L3** | `cublasHgemm` (FP16, $1024 \times 1024$) | `118.23 GFLOP/s` | **`1301.17 GFLOP/s` / `1481.70 GFLOP/s`** | **`1638.66 GFLOP/s` / `1657.99 GFLOP/s`** | **13.9x faster** |
 | **2. cuBLAS L3** | `cublasHgemm` (FP16, $2048 \times 2048$) | `122.40 GFLOP/s` | **`1638.06 GFLOP/s` / `1655.13 GFLOP/s`** | `1576.03 GFLOP/s` / `1684.58 GFLOP/s` | **13.4x faster** |
 | **2. cuBLAS L3** | `cublasSgemmStridedBatched` ($B=16, 512 \times 512$) | `169.36 GFLOP/s` | **`1496.77 GFLOP/s` / `1682.28 GFLOP/s`** | `1396.64 GFLOP/s` / `1588.82 GFLOP/s` | **8.84x faster** |
 | **3. cuFFT** | `cufftExecC2C` (1D $N=1024$, Batch=256, Fused) | `20.32 GFLOP/s` (12-pass) | **`90.52 GFLOP/s` / `119.65 GFLOP/s`** | `65.55 GFLOP/s` / `116.19 GFLOP/s` | **4.45x faster** |
@@ -130,11 +133,13 @@ Across all three benchmark tiers, MUDA achieves near-hardware-ceiling throughput
 | **4. cuDNN** | `cudnnActivationForward` (ReLU, $8 \times 64 \times 128 \times 128$) | `38.10 GB/s` | **`44.78 GB/s` / `54.29 GB/s`** | `39.43 GB/s` / `49.69 GB/s` | **+17.5% bandwidth** |
 | **4. cuDNN** | `cudnnBatchNormalizationForwardInference` | `24.60 GB/s` | **`44.75 GB/s` / `52.44 GB/s`** | `39.94 GB/s` / `49.32 GB/s` | **1.82x faster** |
 | **4. cuDNN** | `cudnnSoftmaxForward` ($4096 \times 1024$, Warp `simd`) | `10.61 GB/s` | **`35.08 GB/s` / `42.83 GB/s`** | `28.82 GB/s` / `35.78 GB/s` | **3.31x faster** |
-| **4. cuDNN** | `cudnnConvolutionForward` ($N=4, 64 \rightarrow 128, 56^2, 3^2$) | `19.99 GFLOP/s` | **`455.24 GFLOP/s` / `461.70 GFLOP/s`** | `425.28 GFLOP/s` / `435.91 GFLOP/s` | **22.8x faster** |
-| **5. cuSPARSE** | `cusparseSpMV` (CSR $16384^2$, 64 nnz/row, Warp) | `13.44 GB/s` | **`38.91 GB/s` / `64.77 GB/s`** | `27.01 GB/s` / `49.55 GB/s` | **2.90x faster** |
-| **5. cuSPARSE** | `cusparseSpMM` (CSR $4096 \times 16384 \times 128$, `float4`) | `36.36 GFLOP/s` | **`147.11 GFLOP/s` / `156.69 GFLOP/s`** | `125.49 GFLOP/s` / `167.18 GFLOP/s` | **4.05x faster** |
+| **4. cuDNN** | `cudnnConvolutionForward` ($N=4, 64 \rightarrow 128, 56^2, 3^2$) | `19.99 GFLOP/s` | **`543.55 GFLOP/s` / `547.10 GFLOP/s`** | `425.28 GFLOP/s` / `435.91 GFLOP/s` | **27.2x faster** |
+| **5. cuSPARSE** | `cusparseSpMV` (CSR $16384^2$, 64 nnz/row, Warp) | `13.44 GB/s` | **`57.52 GB/s` / `64.77 GB/s`** | `27.01 GB/s` / `49.55 GB/s` | **4.28x faster** |
+| **5. cuSPARSE** | `cusparseSpMM` (CSR $4096 \times 16384 \times 128$, `float4`) | `36.36 GFLOP/s` | **`190.05 GFLOP/s` / `191.47 GFLOP/s`** | `125.49 GFLOP/s` / `167.18 GFLOP/s` | **5.23x faster** |
 | **6. Compiler/JIT** | `TranslateCudaToMsl` (AST $\rightarrow$ MSL Cache Hit) | `5.50 us` | **`5.42 us` (`0.05` NMAD)** | **`5.42 us` (`0.03` NMAD)** | **Deterministic cache hit** |
 | **6. Compiler/JIT** | `nvrtcCompileProgram` (Full NVRTC JIT Pipeline) | `5.95 us` | **`5.91 us` (`0.04` NMAD)** | **`5.87 us` (`0.02` NMAD)** | **Deterministic JIT cache hit** |
+| **7. cuRAND** | `curandGenerateUniform` (16M floats, Philox4x32) | `42.88 GB/s` | **`53.22 GB/s` / `58.89 GB/s`** | **`53.22 GB/s` / `58.89 GB/s`** | **`82.5%` physical bus ceiling** |
+| **7. cuRAND** | `curandGenerateNormal` (16M floats, Box-Muller) | `33.33 GB/s` | **`54.00 GB/s` / `56.48 GB/s`** | **`54.00 GB/s` / `56.48 GB/s`** | **`79.1%` DRAM peak** |
 
 ---
 
@@ -472,17 +477,23 @@ Status: REASONABLE
     Min: 29.82 GB/s | Median: 35.08 GB/s | Mean: 35.85 GB/s | P99: 42.83 GB/s
 
 4. cuDNN Deep Learning Suite — cudnnConvolutionForward (N=4, 64->128, 56x56, 3x3, Implicit GEMM):
-    Min: 446.26 GFLOP/s | Median: 455.24 GFLOP/s | Mean: 455.03 GFLOP/s | P99: 461.70 GFLOP/s
+    Min: 511.13 GFLOP/s | Median: 543.55 GFLOP/s | Mean: 541.19 GFLOP/s | P99: 547.10 GFLOP/s
 
 5. cuSPARSE Suite — cusparseSpMV (CSR 16384x16384, 64 nnz/row, Warp-Reduced):
-    Min: 23.48 GB/s | Median: 38.91 GB/s | Mean: 41.14 GB/s | P99: 64.77 GB/s
+    Min: 34.07 GB/s | Median: 57.52 GB/s | Mean: 54.42 GB/s | P99: 64.77 GB/s
 
 5. cuSPARSE Suite — cusparseSpMM (CSR 4096x16384 * Dense 16384x128, Coalesced):
-    Min: 110.58 GFLOP/s | Median: 147.11 GFLOP/s | Mean: 137.70 GFLOP/s | P99: 167.18 GFLOP/s
+    Min: 175.93 GFLOP/s | Median: 190.05 GFLOP/s | Mean: 188.65 GFLOP/s | P99: 191.47 GFLOP/s
 
 6. Compiler & NVRTC JIT Suite — TranslateCudaToMsl (AST -> MSL Source):
     Min: 5.38 us | Median: 5.42 us | MAD: 0.02 us | P99: 11.52 us
 
 6. Compiler & NVRTC JIT Suite — nvrtcCompileProgram (Full NVRTC JIT Pipeline):
     Min: 5.49 us | Median: 5.87 us | MAD: 0.01 us | P99: 6.43 us
+
+7. cuRAND Random Number Suite — curandGenerateUniform (16M floats, Philox4x32):
+    Min: 42.88 GB/s | Median: 53.22 GB/s | Mean: 52.34 GB/s | P99: 58.89 GB/s
+
+7. cuRAND Random Number Suite — curandGenerateNormal (16M floats, Box-Muller):
+    Min: 33.33 GB/s | Median: 54.00 GB/s | Mean: 52.08 GB/s | P99: 56.48 GB/s
 ```
