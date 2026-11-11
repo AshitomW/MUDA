@@ -10,6 +10,7 @@ target_link_libraries(runtime_bench PRIVATE
     muda::cufft
     muda::cudnn
     muda::cusparse
+    muda::curand
     muda::nvrtc
     cuda
     muda::compiler

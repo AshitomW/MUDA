@@ -94,6 +94,7 @@ add_custom_target(
   COMMAND ${CMAKE_COMMAND} -E copy_directory "${PROJECT_SOURCE_DIR}/libraries/dnn/include" "${MUDA_CUDA_HOME_DIR}/include"
   COMMAND ${CMAKE_COMMAND} -E copy_directory "${PROJECT_SOURCE_DIR}/libraries/sparse/include" "${MUDA_CUDA_HOME_DIR}/include"
   COMMAND ${CMAKE_COMMAND} -E copy_directory "${PROJECT_SOURCE_DIR}/libraries/nvrtc/include" "${MUDA_CUDA_HOME_DIR}/include"
+  COMMAND ${CMAKE_COMMAND} -E copy_directory "${PROJECT_SOURCE_DIR}/libraries/rand/include" "${MUDA_CUDA_HOME_DIR}/include"
   COMMAND ${CMAKE_COMMAND} -E copy_directory "${MUDA_GENERATED_DIR}" "${MUDA_CUDA_HOME_DIR}/include"
   COMMAND ${CMAKE_COMMAND} -E create_symlink "$<TARGET_FILE:mudac>" "${MUDA_CUDA_HOME_DIR}/bin/mudac"
   COMMAND ${CMAKE_COMMAND} -E create_symlink "$<TARGET_FILE:nvcc>" "${MUDA_CUDA_HOME_DIR}/bin/nvcc"
@@ -105,6 +106,7 @@ add_custom_target(
   COMMAND ${CMAKE_COMMAND} -E create_symlink "$<TARGET_FILE:cudnn>" "${MUDA_CUDA_HOME_DIR}/lib/libcudnn.dylib"
   COMMAND ${CMAKE_COMMAND} -E create_symlink "$<TARGET_FILE:cusparse>" "${MUDA_CUDA_HOME_DIR}/lib/libcusparse.dylib"
   COMMAND ${CMAKE_COMMAND} -E create_symlink "$<TARGET_FILE:nvrtc>" "${MUDA_CUDA_HOME_DIR}/lib/libnvrtc.dylib"
+  COMMAND ${CMAKE_COMMAND} -E create_symlink "$<TARGET_FILE:curand>" "${MUDA_CUDA_HOME_DIR}/lib/libcurand.dylib"
   COMMAND ${CMAKE_COMMAND} -E create_symlink "$<TARGET_FILE:cuda>" "${MUDA_CUDA_HOME_DIR}/lib64/libcuda.dylib"
   COMMAND ${CMAKE_COMMAND} -E create_symlink "$<TARGET_FILE:cudart>" "${MUDA_CUDA_HOME_DIR}/lib64/libcudart.dylib"
   COMMAND ${CMAKE_COMMAND} -E create_symlink "$<TARGET_FILE:cublas>" "${MUDA_CUDA_HOME_DIR}/lib64/libcublas.dylib"
@@ -112,7 +114,8 @@ add_custom_target(
   COMMAND ${CMAKE_COMMAND} -E create_symlink "$<TARGET_FILE:cudnn>" "${MUDA_CUDA_HOME_DIR}/lib64/libcudnn.dylib"
   COMMAND ${CMAKE_COMMAND} -E create_symlink "$<TARGET_FILE:cusparse>" "${MUDA_CUDA_HOME_DIR}/lib64/libcusparse.dylib"
   COMMAND ${CMAKE_COMMAND} -E create_symlink "$<TARGET_FILE:nvrtc>" "${MUDA_CUDA_HOME_DIR}/lib64/libnvrtc.dylib"
-  DEPENDS mudac nvcc muda cuda cudart cublas cufft cudnn cusparse nvrtc
+  COMMAND ${CMAKE_COMMAND} -E create_symlink "$<TARGET_FILE:curand>" "${MUDA_CUDA_HOME_DIR}/lib64/libcurand.dylib"
+  DEPENDS mudac nvcc muda cuda cudart cublas cufft cudnn cusparse nvrtc curand
   COMMENT "Populating build-tree CUDA_HOME layout at ${MUDA_CUDA_HOME_DIR}"
   VERBATIM
 )

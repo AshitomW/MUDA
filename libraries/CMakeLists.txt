@@ -3,21 +3,37 @@ function(muda_compile_metal_kernels TARGET_NAME METAL_SOURCE EXTRA_INCLUDE_DIR O
   set(AIR_FILE "${CMAKE_CURRENT_BINARY_DIR}/${SHADER_STEM}.air")
   set(METALLIB_FILE "${CMAKE_CURRENT_BINARY_DIR}/${SHADER_STEM}.metallib")
 
-  add_custom_command(
-    OUTPUT "${AIR_FILE}"
-    COMMAND xcrun -sdk macosx metal -std=metal3.1 -O2 -I "${EXTRA_INCLUDE_DIR}" -c "${METAL_SOURCE}" -o "${AIR_FILE}"
-    DEPENDS "${METAL_SOURCE}"
-    COMMENT "Compiling Metal shader ${SHADER_STEM}.metal"
-    VERBATIM
+  execute_process(
+    COMMAND xcrun -f metal
+    RESULT_VARIABLE METAL_TOOLCHAIN_STATUS
+    OUTPUT_QUIET ERROR_QUIET
   )
 
-  add_custom_command(
-    OUTPUT "${METALLIB_FILE}"
-    COMMAND xcrun -sdk macosx metallib "${AIR_FILE}" -o "${METALLIB_FILE}"
-    DEPENDS "${AIR_FILE}"
-    COMMENT "Linking Metal library ${SHADER_STEM}.metallib"
-    VERBATIM
-  )
+  if(METAL_TOOLCHAIN_STATUS EQUAL 0)
+    add_custom_command(
+      OUTPUT "${AIR_FILE}"
+      COMMAND xcrun -sdk macosx metal -std=metal3.1 -O2 -I "${EXTRA_INCLUDE_DIR}" -c "${METAL_SOURCE}" -o "${AIR_FILE}"
+      DEPENDS "${METAL_SOURCE}"
+      COMMENT "Compiling Metal shader ${SHADER_STEM}.metal"
+      VERBATIM
+    )
+
+    add_custom_command(
+      OUTPUT "${METALLIB_FILE}"
+      COMMAND xcrun -sdk macosx metallib "${AIR_FILE}" -o "${METALLIB_FILE}"
+      DEPENDS "${AIR_FILE}"
+      COMMENT "Linking Metal library ${SHADER_STEM}.metallib"
+      VERBATIM
+    )
+  else()
+    add_custom_command(
+      OUTPUT "${METALLIB_FILE}"
+      COMMAND ${CMAKE_COMMAND} -E touch "${METALLIB_FILE}"
+      DEPENDS "${METAL_SOURCE}"
+      COMMENT "Metal offline toolchain absent; runtime will compile ${SHADER_STEM}.metal via JIT"
+      VERBATIM
+    )
+  endif()
 
   add_custom_target("${TARGET_NAME}_metallib" DEPENDS "${METALLIB_FILE}")
   add_dependencies("${TARGET_NAME}" "${TARGET_NAME}_metallib")
@@ -275,8 +291,55 @@ target_link_libraries(
 )
 set_target_properties(nvrtc PROPERTIES OUTPUT_NAME "nvrtc")
 
+# -----------------------------------------------------------------------------
+# cuRAND Shim (libcurand.dylib)
+# -----------------------------------------------------------------------------
+add_library(
+  curand SHARED
+  rand/src/curand_context.mm
+  rand/src/curand_api.mm
+)
+add_library(muda::curand ALIAS curand)
+
+muda_compile_metal_kernels(
+  curand
+  "${CMAKE_CURRENT_SOURCE_DIR}/rand/shaders/curand_kernels.metal"
+  "${CMAKE_CURRENT_SOURCE_DIR}/rand/src"
+  CURAND_METALLIB_FILE
+)
+
+target_include_directories(
+  curand
+  PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/rand/include>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+  PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/rand/src"
+)
+
+target_compile_definitions(
+  curand
+  PRIVATE
+    MUDA_CURAND_METALLIB_PATH="${CURAND_METALLIB_FILE}"
+    MUDA_CURAND_METAL_SOURCE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/rand/shaders/curand_kernels.metal"
+)
+
+target_compile_features(curand PUBLIC cxx_std_20)
+target_compile_options(curand PRIVATE "$<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>")
+target_link_libraries(
+  curand
+  PUBLIC
+    cuda
+  PRIVATE
+    muda_lib_common
+    muda_warnings
+    "-framework Foundation"
+    "-framework Metal"
+)
+set_target_properties(curand PROPERTIES OUTPUT_NAME "curand")
+
 install(
-  TARGETS cublas cufft cudnn cusparse nvrtc
+  TARGETS cublas cufft cudnn cusparse nvrtc curand
   ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
   LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )
@@ -285,3 +348,4 @@ install(DIRECTORY fft/include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 install(DIRECTORY dnn/include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 install(DIRECTORY sparse/include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 install(DIRECTORY nvrtc/include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(DIRECTORY rand/include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})

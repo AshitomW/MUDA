@@ -234,7 +234,8 @@ std::string GenerateKernelStubAndLauncher(const TranslatedKernel& kernel) {
 }
 
 std::string GenerateEmbeddedRegistration(std::span<const TranslatedKernel> kernels,
-                                         std::span<const std::uint8_t> metallib_bytes) {
+                                         std::span<const std::uint8_t> metallib_bytes,
+                                         std::string_view msl_source) {
   std::string code;
   code += "\nnamespace {\n";
   if (!metallib_bytes.empty()) {
@@ -248,6 +249,17 @@ std::string GenerateEmbeddedRegistration(std::span<const TranslatedKernel> kerne
       code += std::to_string(static_cast<unsigned int>(metallib_bytes[index])) + "u,";
     }
     code += "\n};\n";
+  } else if (!msl_source.empty()) {
+    code += "alignas(16) constexpr char __muda_embedded_msl[] = {";
+    for (std::size_t index = 0; index < msl_source.size(); ++index) {
+      if (index % 16 == 0) {
+        code += "\n  ";
+      } else {
+        code += " ";
+      }
+      code += std::to_string(static_cast<int>(static_cast<unsigned char>(msl_source[index]))) + ",";
+    }
+    code += " 0\n};\n";
   }
 
   for (const TranslatedKernel& kernel : kernels) {
@@ -273,6 +285,18 @@ std::string GenerateEmbeddedRegistration(std::span<const TranslatedKernel> kerne
           kernel.name + "), __muda_embedded_metallib, sizeof(__muda_embedded_metallib), \"" +
           msl_entry + "\", " + params_ptr + ", " + std::to_string(kernel.parameters.size()) +
           "u);\n";
+    }
+    code += "}\n";
+  } else if (!msl_source.empty()) {
+    code += "__attribute__((constructor)) void __muda_register_all_kernels() {\n";
+    for (const TranslatedKernel& kernel : kernels) {
+      const std::string& msl_entry = kernel.msl_name.empty() ? kernel.name : kernel.msl_name;
+      const std::string params_ptr =
+          kernel.parameters.empty() ? "nullptr" : ("__muda_params_" + kernel.name);
+      code +=
+          "  (void)mudaRegisterKernelFromSource(reinterpret_cast<const void*>(&__muda_host_stub_" +
+          kernel.name + "), __muda_embedded_msl, sizeof(__muda_embedded_msl) - 1, \"" + msl_entry +
+          "\", " + params_ptr + ", " + std::to_string(kernel.parameters.size()) + "u);\n";
     }
     code += "}\n";
   }
@@ -472,7 +496,8 @@ DiagnosticCode StripDeviceAndRewriteKernels(std::string_view source,
 
 HostRewriteResult RewriteHostCudaToCpp(std::string_view cuda_source,
                                        std::span<const TranslatedKernel> kernels,
-                                       std::span<const std::uint8_t> metallib_bytes) {
+                                       std::span<const std::uint8_t> metallib_bytes,
+                                       std::string_view msl_source) {
   if (kernels.empty()) {
     return {DiagnosticCode::kMissingGlobalKernel, {}};
   }
@@ -484,11 +509,13 @@ HostRewriteResult RewriteHostCudaToCpp(std::string_view cuda_source,
   }
 
   std::string full_cpp;
-  full_cpp.reserve(body_rewritten.size() + metallib_bytes.size() * 5 + 1024);
+  const std::size_t payload_size =
+      !metallib_bytes.empty() ? metallib_bytes.size() : msl_source.size();
+  full_cpp.reserve(body_rewritten.size() + payload_size * 5 + 1024);
   full_cpp += "#include <cuda_runtime.h>\n";
   full_cpp += "#include <cstddef>\n";
   full_cpp += body_rewritten;
-  full_cpp += GenerateEmbeddedRegistration(kernels, metallib_bytes);
+  full_cpp += GenerateEmbeddedRegistration(kernels, metallib_bytes, msl_source);
 
   return {DiagnosticCode::kOk, std::move(full_cpp)};
 }

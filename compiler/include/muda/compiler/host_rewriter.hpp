@@ -29,6 +29,7 @@ struct HostRewriteResult {
  */
 [[nodiscard]] HostRewriteResult RewriteHostCudaToCpp(std::string_view cuda_source,
                                                      std::span<const TranslatedKernel> kernels,
-                                                     std::span<const std::uint8_t> metallib_bytes);
+                                                     std::span<const std::uint8_t> metallib_bytes,
+                                                     std::string_view msl_source = {});
 
 }  // namespace muda::compiler
