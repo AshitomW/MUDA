@@ -189,6 +189,10 @@ int main() {
   if (!TestCacheKeySensitivity()) {
     return 1;
   }
+  if (!muda::compiler::MetalToolchainAvailable()) {
+    std::cout << "skip: Metal toolchain unavailable for AOT metallib compilation\n";
+    return 77;
+  }
   if (!TestIncludeDependencyInvalidation()) {
     return 1;
   }

@@ -363,6 +363,36 @@ cudaError_t LaunchEngine::RegisterKernelFromData(const void* host_func, const vo
   }
 }
 
+cudaError_t LaunchEngine::RegisterKernelFromSource(const void* host_func, const char* msl_source,
+                                                   std::size_t size, const char* kernel_name,
+                                                   const mudaKernelParamDesc* params,
+                                                   std::size_t param_count,
+                                                   id<MTLDevice> device) noexcept {
+  if (host_func == nullptr || msl_source == nullptr || size == 0 || kernel_name == nullptr ||
+      kernel_name[0] == '\0' || !KernelRegistry::ValidateParams(params, param_count)) {
+    return RecordError(cudaErrorInvalidValue);
+  }
+  if (device == nil) {
+    return RecordError(cudaErrorInitializationError);
+  }
+  @autoreleasepool {
+    NSString* source_str = [[NSString alloc] initWithBytes:msl_source
+                                                    length:size
+                                                  encoding:NSUTF8StringEncoding];
+    if (source_str == nil) {
+      return RecordError(cudaErrorInvalidValue);
+    }
+    MTLCompileOptions* options = [[MTLCompileOptions alloc] init];
+    options.mathMode = MTLMathModeFast;
+    NSError* error = nil;
+    id<MTLLibrary> library = [device newLibraryWithSource:source_str options:options error:&error];
+    if (library == nil) {
+      return RecordError(cudaErrorInvalidDeviceFunction);
+    }
+    return RegisterLibraryKernel(device, library, host_func, kernel_name, params, param_count);
+  }
+}
+
 cudaError_t LaunchEngine::RegisterKernelPipeline(const void* host_func,
                                                  std::span<const mudaKernelParamDesc> params,
                                                  id<MTLComputePipelineState> pipeline) noexcept {

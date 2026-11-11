@@ -198,9 +198,11 @@ int DoctorCommand(bool json_output, bool run_smoke_test) {
   const std::string os_machine = has_uname ? sys_info.machine : "arm64";
 
   const std::vector<muda::runtime::DeviceInfo> devices = muda::runtime::EnumerateDevices();
-  const bool toolchain_available = muda::compiler::MetalToolchainAvailable();
-  const std::string toolchain_version =
-      toolchain_available ? muda::compiler::GetMetalToolchainVersion() : "missing";
+  const bool offline_toolchain_available = muda::compiler::MetalToolchainAvailable();
+  const bool toolchain_available = offline_toolchain_available || !devices.empty();
+  const std::string toolchain_version = offline_toolchain_available
+                                            ? muda::compiler::GetMetalToolchainVersion()
+                                            : (!devices.empty() ? "runtime_jit" : "missing");
 
   const std::filesystem::path cache_dir = muda::compiler::ArtifactCache::DefaultCacheDirectory();
   const bool cache_writable = CheckCacheWritable(cache_dir);

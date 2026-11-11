@@ -356,11 +356,10 @@ BuildMetallibResult BuildOrLoadMetallib(const IntermediateArtifacts& artifacts,
 }
 
 DiagnosticCode PrepareHostSource(const std::string& source, const TranslationResult& translation,
-                                 const IntermediateArtifacts& artifacts) {
+                                 const IntermediateArtifacts& artifacts,
+                                 std::string_view msl_source) {
   std::vector<std::uint8_t> metallib_bytes;
-  if (!ReadBinaryFile(artifacts.metallib_path, &metallib_bytes)) {
-    return DiagnosticCode::kMetallibLinkFailed;
-  }
+  (void)ReadBinaryFile(artifacts.metallib_path, &metallib_bytes);
 
   std::vector<TranslatedKernel> kernels_list = translation.kernels;
   if (kernels_list.empty()) {
@@ -368,7 +367,7 @@ DiagnosticCode PrepareHostSource(const std::string& source, const TranslationRes
   }
 
   const HostRewriteResult host_rewritten =
-      RewriteHostCudaToCpp(source, kernels_list, metallib_bytes);
+      RewriteHostCudaToCpp(source, kernels_list, metallib_bytes, msl_source);
   if (!host_rewritten.ok()) {
     return host_rewritten.code;
   }
@@ -488,7 +487,7 @@ CompileResult Compile(const CompileOptions& options) {
   }
 
   const OutputKind output_kind = ResolveOutputKind(options);
-  if (output_kind != OutputKind::kMslSource && !MetalToolchainAvailable()) {
+  if (output_kind == OutputKind::kMetallib && !MetalToolchainAvailable()) {
     return Failure(DiagnosticCode::kToolchainNotFound);
   }
 
@@ -546,9 +545,13 @@ CompileResult Compile(const CompileOptions& options) {
     return Failure(DiagnosticCode::kCannotWriteMetalSource);
   }
 
-  const BuildMetallibResult metallib_result = BuildOrLoadMetallib(artifacts, msl_source, options);
-  if (!metallib_result.ok()) {
-    return Failure(metallib_result.code);
+  const bool has_toolchain = MetalToolchainAvailable();
+  BuildMetallibResult metallib_result{.code = DiagnosticCode::kOk, .cache_hit = false};
+  if (has_toolchain) {
+    metallib_result = BuildOrLoadMetallib(artifacts, msl_source, options);
+    if (!metallib_result.ok()) {
+      return Failure(metallib_result.code);
+    }
   }
 
   if (output_kind == OutputKind::kMetallib) {
@@ -556,7 +559,8 @@ CompileResult Compile(const CompileOptions& options) {
                    std::move(translation.kernel.name), metallib_result.cache_hit);
   }
 
-  const DiagnosticCode host_prep_code = PrepareHostSource(source, translation, artifacts);
+  const DiagnosticCode host_prep_code =
+      PrepareHostSource(source, translation, artifacts, msl_source);
   if (host_prep_code != DiagnosticCode::kOk) {
     return Failure(host_prep_code);
   }

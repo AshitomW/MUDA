@@ -436,6 +436,9 @@ cudaError_t mudaRegisterKernelFromFile(const void* hostFunc, const char* metalli
 cudaError_t mudaRegisterKernelFromData(const void* hostFunc, const void* metallibData,
                                        size_t metallibSize, const char* kernelName,
                                        const mudaKernelParamDesc* params, size_t paramCount);
+cudaError_t mudaRegisterKernelFromSource(const void* hostFunc, const char* mslSource,
+                                         size_t mslLength, const char* kernelName,
+                                         const mudaKernelParamDesc* params, size_t paramCount);
 #ifdef __cplusplus
 cudaError_t cudaLaunchKernel(const void* func, dim3 gridDim, dim3 blockDim, void** args,
                              size_t sharedMem = 0, cudaStream_t stream = nullptr);

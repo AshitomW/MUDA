@@ -42,6 +42,11 @@ class LaunchEngine {
                                      const mudaKernelParamDesc* params, std::size_t param_count,
                                      id<MTLDevice> device) noexcept;
 
+  cudaError_t RegisterKernelFromSource(const void* host_func, const char* msl_source,
+                                       std::size_t size, const char* kernel_name,
+                                       const mudaKernelParamDesc* params, std::size_t param_count,
+                                       id<MTLDevice> device) noexcept;
+
   cudaError_t RegisterKernelPipeline(const void* host_func,
                                      std::span<const mudaKernelParamDesc> params,
                                      id<MTLComputePipelineState> pipeline) noexcept;

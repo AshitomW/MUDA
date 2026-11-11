@@ -291,6 +291,15 @@ cudaError_t mudaRegisterKernelFromData(const void* hostFunc, const void* metalli
   });
 }
 
+cudaError_t mudaRegisterKernelFromSource(const void* hostFunc, const char* mslSource,
+                                         size_t mslLength, const char* kernelName,
+                                         const mudaKernelParamDesc* params, size_t paramCount) {
+  return muda::runtime::cudart::RunWithInit([&](auto& ctx) {
+    return ctx.Launcher().RegisterKernelFromSource(hostFunc, mslSource, mslLength, kernelName,
+                                                   params, paramCount, ctx.Device());
+  });
+}
+
 cudaError_t cudaLaunchKernel(const void* func, dim3 gridDim, dim3 blockDim, void** args,
                              size_t sharedMem, cudaStream_t stream) {
   return muda::runtime::cudart::RunWithInit([&](auto& ctx) {
