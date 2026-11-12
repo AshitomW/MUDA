@@ -7,7 +7,7 @@ It works by translating CUDA source code and PTX assembly into Metal Shading Lan
 > [!NOTE]
 > **Project Scope & Realistic Expectations**: MUDA is an independent, clean-room implementation of a focused, compute-oriented subset of CUDA. It is designed for developers who want to run custom compute kernels, machine learning operations, and workflows from tools like PyTorch and Numba on Apple Silicon.
 > 
-> It is **not** a 100% clone of the full NVIDIA CUDA Toolkit, nor can it execute precompiled NVIDIA machine code (`.cubin` SASS binaries). Code using unsupported features (such as device-side dynamic parallelism, function pointers, or graphics interop) will require modification or will emit compile-time diagnostics.
+> It provides compilation for CUDA C++ source code (`.cu`), PTX virtual assembly (`.ptx`), and clean-room SASS disassembly and execution for modern NVIDIA CUBIN (`.cubin`) and Fatbinary (`.fatbin`) containers. Code using unsupported features (such as device-side dynamic parallelism, function pointers, or graphics interop) will require modification or will emit compile-time diagnostics.
 
 ---
 
@@ -38,7 +38,14 @@ MUDA bridges these differences by translating CUDA C++ and PTX into MSL, providi
 - **Relooper CFG Structurizer:** Analyzes basic blocks and transforms arbitrary branch targets into structured Metal loops and `if`/`else` control flow, with an emulated state-machine dispatcher fallback for irreducible loops.
 - **In-Memory JIT Compilation:** Translates PTX strings into Metal compute pipelines in-process via `cuModuleLoadData` in milliseconds, without spawning subprocesses or writing temporary files to disk.
 
-### 3. CUDA Runtime API (`libcudart`)
+### 3. CUBIN & Fatbinary Disassembly & Execution (`muda::compiler::cubin`)
+- **Fatbinary Container Extraction (`FatbinParser`):** Automatically detects 32-bit (`0xBA55ED50`) and 64-bit (`0x1EE55A01`) NVIDIA Fatbin containers and extracts embedded PTX payloads directly for in-memory JIT execution.
+- **ELF64 Container & Metadata Deserializer (`ElfReader`):** Clean-room ELF64 parser (`EM_CUDA = 190`) deserializing `.nv.info` attributes (`EIATTR_KPARAM_INFO`, `EIATTR_SMEM_SIZE`, `EIATTR_MAX_THREADS`) to reconstruct kernel argument bank offsets, byte sizes, and alignment.
+- **128-bit SASS Machine Instruction Decoder (`SassDecoder`):** Decodes compute instructions for Turing (SM 7.5) and Ampere (SM 8.0/8.6), covering control flow (`EXIT`, `BRA`, `BAR.SYNC`), special registers (`S2R`), integer/address arithmetic (`IMAD`, `IADD`, `ISETP`), float arithmetic (`FADD`, `FMUL`, `FFMA`), and global/shared memory operations (`LDG.E`, `STG.E`, `LDS`, `STS`).
+- **Register-Union State Lifter (`SassLifter`):** Lifts SASS into MSL using the Register-Union State Model (`union Reg32 { uint32_t u; int32_t i; float f; }; thread Reg32 R[256]; thread bool P[8];`), Constant Bank 0 parameter mapping, and unified 64-bit memory addressing.
+- **Transparent Driver JIT Loading:** Routes `.cubin` and `.fatbin` binaries through `cuModuleLoadData` and `ModuleManager::LoadCubin` directly into Metal compute pipeline states.
+
+### 4. CUDA Runtime API (`libcudart`)
 - **Unified & Host Memory:** `cudaMalloc`, `cudaMallocManaged`, `cudaMallocHost`, `cudaFree`, `cudaFreeHost`, and `cudaMallocPitch`.
 - **Segregated Buffer Pool:** Power-of-two size-classed allocator (256 B to 16 MB) that minimizes heap allocation overhead during iterative kernel loops.
 - **Transfers & Fills:** Synchronous and asynchronous 1D and 2D memory copies and sets (`cudaMemcpy`, `cudaMemcpyAsync`, `cudaMemcpy2D`, `cudaMemcpy2DAsync`, `cudaMemset`, `cudaMemsetAsync`, `cudaMemset2D`).
@@ -52,7 +59,7 @@ MUDA bridges these differences by translating CUDA C++ and PTX into MSL, providi
   - **Half-Precision & Vectors:** IEEE 754-2008 `half`, `half2`, and aligned vector types (`float2/3/4`, `int2/3/4`, `uint2/3/4`).
   - **Double Precision (FP64) Emulation:** Support for `double`, `double2/3/4`, double-precision shared memory, and math intrinsics (`fma`, `sqrt`, `rsqrt`, `abs`, `min`, `max`) via `--muda-fp64=fast48` (high-throughput Double-Single emulation in `runtime/include/muda/muda_fp64.metal`) or `--muda-fp64=ieee64` (bit-exact IEEE-754 64-bit integer bitfield emulation with subnormals and round-to-nearest-even).
 
-### 4. CUDA Driver API (`libcuda.dylib`)
+### 5. CUDA Driver API (`libcuda.dylib`)
 - **Clean-Room Driver Interface:** Declares and exports standard driver functions:
   - Device inspection (`cuInit`, `cuDeviceGet*`, `cuDeviceGetName`, `cuDeviceTotalMem`, `cuDeviceGetAttribute`, `cuDeviceGetUuid`).
   - Context lifecycle (`cuCtxCreate`, `cuCtxDestroy`, `cuCtxSetCurrent`, `cuCtxGetCurrent`, `cuCtxSynchronize`, `cuDevicePrimaryCtx*`).
@@ -62,7 +69,7 @@ MUDA bridges these differences by translating CUDA C++ and PTX into MSL, providi
   - Occupancy queries (`cuOccupancyMaxActiveBlocksPerMultiprocessor`, `cuOccupancyMaxPotentialBlockSize`).
 - **Driver ABI Compatibility:** Exports standard CUDA 4.0+ `_v2` symbol aliases, and provides stubs for profiler and IPC symbols to avoid runtime binding crashes in Python `ctypes`.
 
-### 5. Acceleration Libraries & Runtime Compilation
+### 6. Acceleration Libraries & Runtime Compilation
 - **cuBLAS (`libcublas.dylib`):**
   - Level-1: `Saxpy`, `Scopy`, `Sscal`, `Sswap`, `Sdot`, `Snrm2`, `Sasum`, `Isamax`, and double precision (`Daxpy`, `Dcopy`, `Dscal`, `Dswap`, `Ddot`, `Dnrm2`, `Dasum`, `Idamax`).
   - Level-2: `Sgemv`, `Dgemv`.
@@ -86,16 +93,16 @@ MUDA bridges these differences by translating CUDA C++ and PTX into MSL, providi
 - **NVRTC (`libnvrtc.dylib`):**
   - Runtime compilation of CUDA C++ strings directly into Metal pipelines via `nvrtcCreateProgram`, `nvrtcCompileProgram`, and `nvrtcGetPTX`.
 
-### 6. Python, Numba & PyTorch Integration
+### 7. Python, Numba & PyTorch Integration
 - **Numba CUDA Support:** Verified with Numba's CUDA driver interface via `NUMBA_CUDA_DRIVER`. Supports elementwise vector math, shared-memory reductions with `bar.sync`, and 2D tiled matrix multiplications.
 - **PyTorch Extension Bridge (`python/muda`):** Allows custom `.cu` kernel extensions to be compiled with `nvcc` and called directly from PyTorch, with support for `torch.autograd.Function` and `torch.Tensor` operations via `libcublas`.
 
-### 7. Diagnostics & Environment Tooling (`muda`)
+### 8. Diagnostics & Environment Tooling (`muda`)
 - `muda doctor [--json] [--smoke-test]`: Inspects the macOS environment, Metal GPU limits, toolchain availability, compiler cache, and runs an end-to-end GPU compute smoke test.
 - `muda path <target>`: Prints absolute paths to `cuda-home`, `libcuda.dylib`, `libcudart.dylib`, `include`, `cache`, or `mudac`.
 - `muda cache <info|clear|verify>`: Inspects, clears, or validates the compiler artifact cache.
 
-### 8. Interactive WebAssembly Playground
+### 9. Interactive WebAssembly Playground
 - The core C++ translation engine compiles to WebAssembly (`web/wasm/`), powering an offline in-browser playground (`web/`).
 - Allows developers to paste CUDA C++ or PTX code and view the generated Metal Shading Language in real time, inspect reflected kernel buffer slots and threadgroup allocations, and share code snippets via URL.
 
@@ -105,7 +112,7 @@ MUDA bridges these differences by translating CUDA C++ and PTX into MSL, providi
 
 To keep expectations grounded, here is an honest summary of what MUDA does not do or where Apple Silicon differs from NVIDIA hardware:
 
-1. **No Binary SASS / `.cubin` Execution:** MUDA compiles from CUDA C++ source code (`.cu`) or PTX virtual assembly (`.ptx`). It cannot decompile or execute precompiled NVIDIA ELF binaries or proprietary third-party binary libraries.
+1. **Precompiled SASS / `.cubin` & Fatbinary Scope:** MUDA provides clean-room ELF64 CUBIN and Fatbinary parsing, with 128-bit SASS disassembly and execution for modern NVIDIA architectures (Turing SM 7.5, Ampere SM 8.0/8.6) covering compute instructions, control flow, register-union state lifting, and memory operations. Precompiled proprietary blobs relying on architecture-specific graphics pipelines, hardware video decoding, or undocumented instruction sets are not supported.
 2. **Unsupported Device Constructs:**
    - **Dynamic Parallelism:** Metal does not support launching kernels from inside a running GPU kernel (`<<<...>>>` device launches).
    - **Device Function Pointers & Virtual Methods:** Indirect device-side calls and C++ virtual tables on the device are unsupported.
@@ -154,7 +161,7 @@ cmake --preset release
 # Build compiler, runtime, libraries, tools, and benchmarks
 cmake --build --preset release
 
-# Run the test suite (32 automated tests)
+# Run the test suite (35 automated tests)
 ctest --preset release --output-on-failure
 ```
 
@@ -297,13 +304,13 @@ ext = compile_cuda_extension(
 
 ## Verification & Testing
 
-MUDA includes 34 automated test suites executed via CTest, covering:
+MUDA includes 35 automated test suites executed via CTest, covering:
 
 | Category | Tests | Description |
 |---|---|---|
 | **Language & Primitives** | `vector_add_test`, `warp_intrinsics_test`, `atomics_test`, `half_vector_test` | Shuffle, ballot, 32/64-bit atomics, float CAS, FP16 vectors |
 | **Numerical Parity & Emulation** | `corpus_test`, `fp64_test` | 30 numerical parity kernels comparing Metal output against CPU reference results, plus double-precision FP64 emulation (Fast48 & IEEE-754 bitfields) |
-| **Compiler & PTX** | `compiler_test`, `ptx_lexer_test`, `ptx_parser_test`, `ptx_to_mmir_test`, `compiler_cache_test` | AST rewriting, PTX shift-reduce parsing, CFG relooper, and content cache |
+| **Compiler, PTX & SASS** | `compiler_test`, `ptx_lexer_test`, `ptx_parser_test`, `ptx_to_mmir_test`, `cubin_test`, `compiler_cache_test` | AST rewriting, PTX shift-reduce parsing, CFG relooper, ELF64/Fatbinary parsing, 128-bit SASS disassembly & state-union lifting, and content cache |
 | **Runtime & Driver** | `cuda_runtime_test`, `driver_api_test`, `buffer_pool_test`, `numba_mock_test` | Unified memory, streams, events, buffer pool reuse, and in-memory module loading |
 | **Acceleration Libraries** | `cublas_test`, `cufft_test`, `cudnn_test`, `cusparse_test`, `curand_test`, `nvrtc_test` | cuBLAS GEMM, cuFFT 1D/2D transforms, cuDNN convolutions/activations, cuSPARSE SpMV/SpMM, cuRAND Philox RNG, and NVRTC compilation |
 | **Integration & Tooling** | `header_hygiene_test`, `muda_cli_test`, `python_*_test` | CLI commands, Python ctypes ABI, Numba CUDA execution, and PyTorch extensions |
@@ -338,7 +345,7 @@ Bug reports, test cases, and pull requests are welcome. When submitting changes:
 
 1. Ensure code compiles cleanly with `-Wall -Wextra -Wpedantic -Wshadow -Wconversion` without warnings.
 2. Format code with `clang-format` before opening a pull request.
-3. Verify that all 34 test suites pass:
+3. Verify that all 35 test suites pass:
    ```bash
    ctest --test-dir build --output-on-failure
    ```
