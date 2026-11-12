@@ -8,6 +8,7 @@
 #import <Metal/Metal.h>
 
 #include <cstddef>
+#include <span>
 #include <string_view>
 
 #include "cuda.h"
@@ -27,6 +28,10 @@ class ModuleManager final {
   [[nodiscard]] static CUresult LoadPtx(std::string_view ptx_source, CUmodule* out_module,
                                         id<MTLDevice> device,
                                         cudart::LaunchEngine& launcher) noexcept;
+
+  [[nodiscard]] static CUresult LoadCubin(std::span<const std::uint8_t> cubin_data,
+                                          CUmodule* out_module, id<MTLDevice> device,
+                                          cudart::LaunchEngine& launcher) noexcept;
 
   [[nodiscard]] static CUresult LoadMetallibData(const void* data, std::size_t size,
                                                  CUmodule* out_module, id<MTLDevice> device,

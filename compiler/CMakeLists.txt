@@ -2,6 +2,11 @@ add_library(
   muda_compiler
   src/ast_extractor.cpp
   src/cache.cpp
+  src/cubin/cubin_translator.cpp
+  src/cubin/elf_reader.cpp
+  src/cubin/fatbin.cpp
+  src/cubin/sass_decoder.cpp
+  src/cubin/sass_lifter.cpp
   src/driver.cpp
   src/host_rewriter.cpp
   src/mmir.cpp
