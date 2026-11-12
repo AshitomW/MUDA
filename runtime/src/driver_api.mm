@@ -24,6 +24,7 @@
 #include "event_manager.hpp"
 #include "launch_engine.hpp"
 #include "memory_manager.hpp"
+#include "muda/compiler/cubin/cubin_translator.hpp"
 #include "muda/runtime/driver_types.hpp"
 #include "muda/runtime/module_manager.hpp"
 #include "runtime_context.hpp"
@@ -1042,6 +1043,15 @@ CUresult cuModuleLoadData(CUmodule* module, const void* image) {
   }
   EnsureContext();
   auto& rt = muda::runtime::cudart::RuntimeContext::Instance();
+
+  const auto* bytes = static_cast<const std::uint8_t*>(image);
+  // Check if image is an NVIDIA Fatbinary or ELF CUBIN
+  if (muda::compiler::cubin::IsFatbinary(std::span<const std::uint8_t>(bytes, 16)) ||
+      muda::compiler::cubin::IsElfCubin(std::span<const std::uint8_t>(bytes, 64))) {
+    return muda::runtime::driver::ModuleManager::LoadCubin(
+        std::span<const std::uint8_t>(bytes, 1024 * 1024 * 64), module, rt.Device(),
+        rt.Launcher());
+  }
 
   const char* str = static_cast<const char*>(image);
   // Check if image is a null-terminated PTX string

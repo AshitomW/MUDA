@@ -122,6 +122,10 @@ target_include_directories(
 )
 add_test(NAME header_hygiene_test COMMAND header_hygiene_test)
 
+add_executable(cubin_test cubin_test.cpp)
+target_link_libraries(cubin_test PRIVATE muda::compiler cuda muda_warnings)
+add_test(NAME cubin_test COMMAND cubin_test)
+
 set_tests_properties(compiler_test compiler_cache_test vector_add_test corpus_test warp_intrinsics_test atomics_test half_vector_test PROPERTIES SKIP_RETURN_CODE 77)
 
 add_test(NAME mudac_version COMMAND mudac --version)

@@ -15,6 +15,7 @@
 
 #include "cuda.h"
 #include "launch_engine.hpp"
+#include "muda/compiler/cubin/cubin_translator.hpp"
 #include "muda/compiler/ptx/ptx_to_mmir.hpp"
 #include "muda/compiler/translator.hpp"
 #include "muda/runtime/driver_types.hpp"
@@ -24,53 +25,13 @@ namespace {
 
 constexpr std::string_view kNvrtcCudaMarker = "// MUDA_NVRTC_CUDA_SOURCE";
 
-}  // namespace
-
-CUresult ModuleManager::LoadPtx(std::string_view ptx_source, CUmodule* out_module,
-                                id<MTLDevice> device, cudart::LaunchEngine& launcher) noexcept {
-  if (ptx_source.empty() || out_module == nullptr || device == nil) {
-    return CUDA_ERROR_INVALID_VALUE;
-  }
-
-  muda::compiler::TranslationOptions trans_opts;
-  const char* env_fp64 = std::getenv("MUDA_FP64");
-  if (env_fp64 != nullptr && env_fp64[0] != '\0') {
-    trans_opts.fp64_policy = muda::compiler::ParseFp64Policy(env_fp64);
-  } else {
-    constexpr std::string_view kFp64PolicyMarker = "// MUDA_FP64_POLICY=";
-    const std::size_t policy_pos = ptx_source.find(kFp64PolicyMarker);
-    if (policy_pos != std::string_view::npos) {
-      const std::size_t start = policy_pos + kFp64PolicyMarker.size();
-      const std::size_t end = ptx_source.find('\n', start);
-      std::string_view policy_name = (end == std::string_view::npos)
-                                         ? ptx_source.substr(start)
-                                         : ptx_source.substr(start, end - start);
-      while (!policy_name.empty() && (policy_name.back() == '\r' || policy_name.back() == ' ')) {
-        policy_name.remove_suffix(1);
-      }
-      trans_opts.fp64_policy = muda::compiler::ParseFp64Policy(policy_name);
-    }
-  }
-
-  muda::compiler::TranslationResult tr;
-  const std::size_t nvrtc_pos = ptx_source.find(kNvrtcCudaMarker);
-  if (nvrtc_pos != std::string_view::npos) {
-    std::string_view cuda_src = ptx_source.substr(nvrtc_pos + kNvrtcCudaMarker.size());
-    while (!cuda_src.empty() && (cuda_src.front() == '\n' || cuda_src.front() == '\r')) {
-      cuda_src.remove_prefix(1);
-    }
-    tr = muda::compiler::TranslateCudaToMsl(cuda_src, trans_opts);
-  } else {
-    tr = muda::compiler::ptx::TranslatePtxToMsl(ptx_source, trans_opts);
-  }
-  if (!tr.ok()) {
-    return CUDA_ERROR_INVALID_PTX;
-  }
-
+CUresult CompileAndRegisterModule(const muda::compiler::TranslationResult& tr, CUmodule* out_module,
+                                  id<MTLDevice> device, cudart::LaunchEngine& launcher,
+                                  const muda::compiler::TranslationOptions& trans_opts) noexcept {
   @autoreleasepool {
     NSString* msl_ns = [NSString stringWithUTF8String:tr.msl.c_str()];
     if (msl_ns == nil) {
-      return CUDA_ERROR_INVALID_PTX;
+      return CUDA_ERROR_INVALID_IMAGE;
     }
 
     MTLCompileOptions* options = [[MTLCompileOptions alloc] init];
@@ -133,6 +94,73 @@ CUresult ModuleManager::LoadPtx(std::string_view ptx_source, CUmodule* out_modul
     *out_module = mod.release();
     return CUDA_SUCCESS;
   }
+}
+
+}  // namespace
+
+CUresult ModuleManager::LoadPtx(std::string_view ptx_source, CUmodule* out_module,
+                                id<MTLDevice> device, cudart::LaunchEngine& launcher) noexcept {
+  if (ptx_source.empty() || out_module == nullptr || device == nil) {
+    return CUDA_ERROR_INVALID_VALUE;
+  }
+
+  muda::compiler::TranslationOptions trans_opts;
+  const char* env_fp64 = std::getenv("MUDA_FP64");
+  if (env_fp64 != nullptr && env_fp64[0] != '\0') {
+    trans_opts.fp64_policy = muda::compiler::ParseFp64Policy(env_fp64);
+  } else {
+    constexpr std::string_view kFp64PolicyMarker = "// MUDA_FP64_POLICY=";
+    const std::size_t policy_pos = ptx_source.find(kFp64PolicyMarker);
+    if (policy_pos != std::string_view::npos) {
+      const std::size_t start = policy_pos + kFp64PolicyMarker.size();
+      const std::size_t end = ptx_source.find('\n', start);
+      std::string_view policy_name = (end == std::string_view::npos)
+                                         ? ptx_source.substr(start)
+                                         : ptx_source.substr(start, end - start);
+      while (!policy_name.empty() && (policy_name.back() == '\r' || policy_name.back() == ' ')) {
+        policy_name.remove_suffix(1);
+      }
+      trans_opts.fp64_policy = muda::compiler::ParseFp64Policy(policy_name);
+    }
+  }
+
+  muda::compiler::TranslationResult tr;
+  const std::size_t nvrtc_pos = ptx_source.find(kNvrtcCudaMarker);
+  if (nvrtc_pos != std::string_view::npos) {
+    std::string_view cuda_src = ptx_source.substr(nvrtc_pos + kNvrtcCudaMarker.size());
+    while (!cuda_src.empty() && (cuda_src.front() == '\n' || cuda_src.front() == '\r')) {
+      cuda_src.remove_prefix(1);
+    }
+    tr = muda::compiler::TranslateCudaToMsl(cuda_src, trans_opts);
+  } else {
+    tr = muda::compiler::ptx::TranslatePtxToMsl(ptx_source, trans_opts);
+  }
+  if (!tr.ok()) {
+    return CUDA_ERROR_INVALID_PTX;
+  }
+
+  return CompileAndRegisterModule(tr, out_module, device, launcher, trans_opts);
+}
+
+CUresult ModuleManager::LoadCubin(std::span<const std::uint8_t> cubin_data, CUmodule* out_module,
+                                  id<MTLDevice> device, cudart::LaunchEngine& launcher) noexcept {
+  if (cubin_data.empty() || out_module == nullptr || device == nil) {
+    return CUDA_ERROR_INVALID_VALUE;
+  }
+
+  muda::compiler::TranslationOptions trans_opts;
+  const char* env_fp64 = std::getenv("MUDA_FP64");
+  if (env_fp64 != nullptr && env_fp64[0] != '\0') {
+    trans_opts.fp64_policy = muda::compiler::ParseFp64Policy(env_fp64);
+  }
+
+  muda::compiler::TranslationResult tr =
+      muda::compiler::cubin::TranslateCubinOrFatbinToMsl(cubin_data, trans_opts);
+  if (!tr.ok()) {
+    return CUDA_ERROR_INVALID_IMAGE;
+  }
+
+  return CompileAndRegisterModule(tr, out_module, device, launcher, trans_opts);
 }
 
 CUresult ModuleManager::LoadMetallibData(const void* data, std::size_t size, CUmodule* out_module,
