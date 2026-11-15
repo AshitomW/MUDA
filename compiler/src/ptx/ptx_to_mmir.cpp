@@ -173,7 +173,7 @@ void LowerInstruction(const Instruction& inst, const TypeInference& types, std::
     if (inst.opcode == TokenKind::kOpRet) {
       *body += "return;\n  ";
     } else if (inst.opcode == TokenKind::kOpBar) {
-      *body += "threadgroup_barrier(mem_flags::mem_threadgroup);\n  ";
+      *body += "threadgroup_barrier(mem_flags::mem_threadgroup | mem_flags::mem_device);\n  ";
     }
     return;
   }
@@ -422,8 +422,6 @@ mmir::Module LowerPtxToMmir(const Program& program, const TranslationOptions& op
 
   for (const Function& fn : program.functions) {
     const TypeInference types = TypeInference::Analyze(fn);
-    const ControlFlowGraph cfg = ControlFlowGraph::Build(fn);
-    const StructuredFunction structured = Structurizer::Structurize(fn, cfg);
 
     mmir::KernelFunction kernel_fn;
     kernel_fn.name = std::string(fn.name);

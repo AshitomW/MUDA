@@ -261,17 +261,18 @@ bool ArtifactCache::Store(std::string_view key,
 
 bool ArtifactCache::CopyCachedMetallibTo(std::string_view key,
                                          const std::filesystem::path& destination) const {
-  const std::optional<std::vector<std::uint8_t>> cached = Lookup(key);
-  if (!cached.has_value()) {
+  if (root_dir_.empty() || key.empty()) {
     return false;
   }
-  std::ofstream out(destination, std::ios::binary);
-  if (!out) {
+  const std::filesystem::path src = EntryPath(key);
+  std::error_code ec;
+  const std::uintmax_t sz = std::filesystem::file_size(src, ec);
+  if (ec || sz <= 4u) {
     return false;
   }
-  out.write(reinterpret_cast<const char*>(cached->data()),
-            static_cast<std::streamsize>(cached->size()));
-  return static_cast<bool>(out);
+  std::filesystem::copy_file(src, destination, std::filesystem::copy_options::overwrite_existing,
+                             ec);
+  return !ec;
 }
 
 CacheStats ArtifactCache::Inspect() const noexcept {

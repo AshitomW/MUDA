@@ -551,7 +551,7 @@ DiagnosticCode ExtractSharedMemoryAndLowerBody(std::string_view raw_body,
     if (word == "__syncthreads" && next < body.size() && body[next] == '(') {
       const std::size_t close = FindMatching(body, next, '(', ')');
       if (close != std::string_view::npos) {
-        result.append("threadgroup_barrier(mem_flags::mem_threadgroup)");
+        result.append("threadgroup_barrier(mem_flags::mem_threadgroup | mem_flags::mem_device)");
         index = close + 1;
         continue;
       }
@@ -560,7 +560,7 @@ DiagnosticCode ExtractSharedMemoryAndLowerBody(std::string_view raw_body,
     if (word == "__syncwarp" && next < body.size() && body[next] == '(') {
       const std::size_t close = FindMatching(body, next, '(', ')');
       if (close != std::string_view::npos) {
-        result.append("simdgroup_barrier(mem_flags::mem_threadgroup)");
+        result.append("simdgroup_barrier(mem_flags::mem_none)");
         index = close + 1;
         continue;
       }
