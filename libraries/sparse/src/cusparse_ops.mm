@@ -163,6 +163,33 @@ cusparseStatus_t cusparseSpMV(cusparseHandle_t handle, cusparseOperation_t opA, 
     }
   }
 
+  // Fast Path 2: O(NNZ) row-wise atomic-scatter for FP32 transpose SpMV
+  if (u_op != 0u && a_d->value_type == CUDA_R_32F) {
+    id<MTLComputePipelineState> scale_pipe = GetCusparsePipeline("muda_cusparse_scale_f32");
+    id<MTLComputePipelineState> scatter_pipe =
+        GetCusparsePipeline("muda_cusparse_spmv_csr_trans_scatter_f32");
+    if (scale_pipe != nil && scatter_pipe != nil) {
+      const std::array<ShaderArg, 3> scale_args = {
+          ShaderArg::Buffer(buf_y),
+          ShaderArg::Value(u_cols),
+          ShaderArg::Value(beta_val),
+      };
+      if (exec.DispatchThreads1D(scale_pipe, static_cast<std::size_t>(u_cols), 256, scale_args, 0,
+                                stream) != cudaSuccess) {
+        return CUSPARSE_STATUS_EXECUTION_FAILED;
+      }
+      const std::array<ShaderArg, 8> scatter_args = {
+          ShaderArg::Buffer(buf_row), ShaderArg::Buffer(buf_col), ShaderArg::Buffer(buf_val),
+          ShaderArg::Buffer(buf_x),   ShaderArg::Buffer(buf_y),   ShaderArg::Value(u_rows),
+          ShaderArg::Value(idx_base), ShaderArg::Value(alpha_val),
+      };
+      return (exec.DispatchThreads1D(scatter_pipe, static_cast<std::size_t>(u_rows), 256,
+                                     scatter_args, 0, stream) == cudaSuccess)
+                 ? CUSPARSE_STATUS_SUCCESS
+                 : CUSPARSE_STATUS_EXECUTION_FAILED;
+    }
+  }
+
   const std::string_view k_name =
       (a_d->value_type == CUDA_R_32F) ? "muda_cusparse_spmv_csr_f32" : "muda_cusparse_spmv_csr_f16";
   id<MTLComputePipelineState> pipe = GetCusparsePipeline(k_name);

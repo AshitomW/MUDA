@@ -26,7 +26,13 @@ struct GemmPlanKey {
   int m = 0;
   int n = 0;
   int k = 0;
+  int lda = 0;
+  int ldb = 0;
+  int ldc = 0;
   int batch_count = 1;
+  long long stride_a = 0;
+  long long stride_b = 0;
+  long long stride_c = 0;
   bool trans_left = false;
   bool trans_right = false;
   bool is_fp16 = false;
@@ -34,10 +40,12 @@ struct GemmPlanKey {
   std::uint32_t beta_bits = 0;
 
   bool operator==(const GemmPlanKey& other) const noexcept {
-    return m == other.m && n == other.n && k == other.k && batch_count == other.batch_count &&
-           trans_left == other.trans_left && trans_right == other.trans_right &&
-           is_fp16 == other.is_fp16 && alpha_bits == other.alpha_bits &&
-           beta_bits == other.beta_bits;
+    return m == other.m && n == other.n && k == other.k && lda == other.lda &&
+           ldb == other.ldb && ldc == other.ldc && batch_count == other.batch_count &&
+           stride_a == other.stride_a && stride_b == other.stride_b &&
+           stride_c == other.stride_c && trans_left == other.trans_left &&
+           trans_right == other.trans_right && is_fp16 == other.is_fp16 &&
+           alpha_bits == other.alpha_bits && beta_bits == other.beta_bits;
   }
 };
 
@@ -47,7 +55,13 @@ struct GemmPlanKeyHash {
     HashCombine(seed, key.m);
     HashCombine(seed, key.n);
     HashCombine(seed, key.k);
+    HashCombine(seed, key.lda);
+    HashCombine(seed, key.ldb);
+    HashCombine(seed, key.ldc);
     HashCombine(seed, key.batch_count);
+    HashCombine(seed, key.stride_a);
+    HashCombine(seed, key.stride_b);
+    HashCombine(seed, key.stride_c);
     HashCombine(seed, key.trans_left);
     HashCombine(seed, key.trans_right);
     HashCombine(seed, key.is_fp16);
@@ -74,6 +88,143 @@ struct CachedMpsGemmPlan {
 GetMpsGemmPlanCache() noexcept {
   static LruPlanCache<GemmPlanKey, CachedMpsGemmPlan, GemmPlanKeyHash> cache(256);
   return cache;
+}
+
+[[nodiscard]] bool TryExecuteMpsGemm(LibraryExecutor& exec, cudaStream_t stream,
+                                     cublasOperation_t transa, cublasOperation_t transb, int m,
+                                     int n, int k, float alpha_val, const ResolvedBuffer& buf_a,
+                                     int lda, long long int strideA, const ResolvedBuffer& buf_b,
+                                     int ldb, long long int strideB, float beta_val,
+                                     const ResolvedBuffer& buf_c, int ldc, long long int strideC,
+                                     int batch_count, bool is_fp16) noexcept {
+  const bool trans_left = (transb != CUBLAS_OP_N);
+  const bool trans_right = (transa != CUBLAS_OP_N);
+  std::uint32_t alpha_bits = 0;
+  std::uint32_t beta_bits = 0;
+  std::memcpy(&alpha_bits, &alpha_val, sizeof(float));
+  std::memcpy(&beta_bits, &beta_val, sizeof(float));
+
+  const GemmPlanKey key{
+      .m = m,
+      .n = n,
+      .k = k,
+      .lda = lda,
+      .ldb = ldb,
+      .ldc = ldc,
+      .batch_count = batch_count,
+      .stride_a = (batch_count > 1) ? strideA : 0,
+      .stride_b = (batch_count > 1) ? strideB : 0,
+      .stride_c = (batch_count > 1) ? strideC : 0,
+      .trans_left = trans_left,
+      .trans_right = trans_right,
+      .is_fp16 = is_fp16,
+      .alpha_bits = alpha_bits,
+      .beta_bits = beta_bits,
+  };
+
+  const std::size_t elem_bytes = is_fp16 ? sizeof(__half) : sizeof(float);
+  const MPSDataType data_type = is_fp16 ? MPSDataTypeFloat16 : MPSDataTypeFloat32;
+
+  @autoreleasepool {
+    auto& cache = GetMpsGemmPlanCache();
+    CachedMpsGemmPlan plan{};
+    if (auto cached = cache.Lookup(key); cached.has_value()) {
+      plan = *cached;
+    } else {
+      id<MTLDevice> device = exec.Device();
+      plan.kernel = [[MPSMatrixMultiplication alloc] initWithDevice:device
+                                                      transposeLeft:trans_left
+                                                     transposeRight:trans_right
+                                                         resultRows:static_cast<NSUInteger>(n)
+                                                      resultColumns:static_cast<NSUInteger>(m)
+                                                    interiorColumns:static_cast<NSUInteger>(k)
+                                                              alpha:static_cast<double>(alpha_val)
+                                                               beta:static_cast<double>(beta_val)];
+      if (plan.kernel != nil) {
+        plan.kernel.batchStart = 0;
+        plan.kernel.batchSize = static_cast<NSUInteger>(batch_count);
+        const NSUInteger left_rows = static_cast<NSUInteger>(trans_left ? k : n);
+        const NSUInteger left_cols = static_cast<NSUInteger>(trans_left ? n : k);
+        const NSUInteger right_rows = static_cast<NSUInteger>(trans_right ? m : k);
+        const NSUInteger right_cols = static_cast<NSUInteger>(trans_right ? k : m);
+        const NSUInteger left_row_bytes = static_cast<NSUInteger>(ldb) * elem_bytes;
+        const NSUInteger right_row_bytes = static_cast<NSUInteger>(lda) * elem_bytes;
+        const NSUInteger out_row_bytes = static_cast<NSUInteger>(ldc) * elem_bytes;
+
+        if (batch_count == 1) {
+          plan.desc_left = [MPSMatrixDescriptor matrixDescriptorWithRows:left_rows
+                                                                 columns:left_cols
+                                                                rowBytes:left_row_bytes
+                                                                dataType:data_type];
+          plan.desc_right = [MPSMatrixDescriptor matrixDescriptorWithRows:right_rows
+                                                                  columns:right_cols
+                                                                 rowBytes:right_row_bytes
+                                                                 dataType:data_type];
+          plan.desc_out = [MPSMatrixDescriptor matrixDescriptorWithRows:static_cast<NSUInteger>(n)
+                                                                columns:static_cast<NSUInteger>(m)
+                                                               rowBytes:out_row_bytes
+                                                               dataType:data_type];
+        } else {
+          plan.desc_left =
+              [MPSMatrixDescriptor matrixDescriptorWithRows:left_rows
+                                                    columns:left_cols
+                                                   matrices:static_cast<NSUInteger>(batch_count)
+                                                   rowBytes:left_row_bytes
+                                                matrixBytes:static_cast<NSUInteger>(strideB) *
+                                                            elem_bytes
+                                                   dataType:data_type];
+          plan.desc_right =
+              [MPSMatrixDescriptor matrixDescriptorWithRows:right_rows
+                                                    columns:right_cols
+                                                   matrices:static_cast<NSUInteger>(batch_count)
+                                                   rowBytes:right_row_bytes
+                                                matrixBytes:static_cast<NSUInteger>(strideA) *
+                                                            elem_bytes
+                                                   dataType:data_type];
+          plan.desc_out =
+              [MPSMatrixDescriptor matrixDescriptorWithRows:static_cast<NSUInteger>(n)
+                                                    columns:static_cast<NSUInteger>(m)
+                                                   matrices:static_cast<NSUInteger>(batch_count)
+                                                   rowBytes:out_row_bytes
+                                                matrixBytes:static_cast<NSUInteger>(strideC) *
+                                                            elem_bytes
+                                                   dataType:data_type];
+        }
+        plan.lda = lda;
+        plan.ldb = ldb;
+        plan.ldc = ldc;
+        plan.stride_a = strideA;
+        plan.stride_b = strideB;
+        plan.stride_c = strideC;
+        cache.Insert(key, plan);
+      }
+    }
+
+    if (plan.kernel != nil && plan.desc_left != nil && plan.desc_right != nil &&
+        plan.desc_out != nil) {
+      MPSMatrix* mat_left = [[MPSMatrix alloc] initWithBuffer:buf_b.buffer
+                                                       offset:buf_b.offset
+                                                   descriptor:plan.desc_left];
+      MPSMatrix* mat_right = [[MPSMatrix alloc] initWithBuffer:buf_a.buffer
+                                                        offset:buf_a.offset
+                                                    descriptor:plan.desc_right];
+      MPSMatrix* mat_out = [[MPSMatrix alloc] initWithBuffer:buf_c.buffer
+                                                      offset:buf_c.offset
+                                                  descriptor:plan.desc_out];
+      const cudaError_t enc_err =
+          exec.EncodeCommandBuffer(stream, ^(id<MTLCommandBuffer> cmd_buf) {
+            [plan.kernel encodeToCommandBuffer:cmd_buf
+                                    leftMatrix:mat_left
+                                   rightMatrix:mat_right
+                                  resultMatrix:mat_out];
+            return true;
+          });
+      if (enc_err == cudaSuccess) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 [[nodiscard]] constexpr bool IsValidOperation(cublasOperation_t op) noexcept {
@@ -129,127 +280,10 @@ GetMpsGemmPlanCache() noexcept {
   const bool can_use_mps = valid_batch_strides && (m >= 64 && n >= 64 && k >= 64) &&
                            ((buf_a.offset % 4u) == 0u) && ((buf_b.offset % 4u) == 0u) &&
                            ((buf_c.offset % 4u) == 0u);
-  if (can_use_mps) {
-    const bool trans_left = (transb != CUBLAS_OP_N);
-    const bool trans_right = (transa != CUBLAS_OP_N);
-    std::uint32_t alpha_bits = 0;
-    std::uint32_t beta_bits = 0;
-    std::memcpy(&alpha_bits, &alpha_val, sizeof(float));
-    std::memcpy(&beta_bits, &beta_val, sizeof(float));
-
-    const GemmPlanKey key{
-        .m = m,
-        .n = n,
-        .k = k,
-        .batch_count = batch_count,
-        .trans_left = trans_left,
-        .trans_right = trans_right,
-        .is_fp16 = false,
-        .alpha_bits = alpha_bits,
-        .beta_bits = beta_bits,
-    };
-
-    @autoreleasepool {
-      auto& cache = GetMpsGemmPlanCache();
-      CachedMpsGemmPlan plan{};
-      if (auto cached = cache.Lookup(key);
-          cached.has_value() && cached->lda == lda && cached->ldb == ldb && cached->ldc == ldc &&
-          cached->stride_a == strideA && cached->stride_b == strideB &&
-          cached->stride_c == strideC) {
-        plan = *cached;
-      } else {
-        id<MTLDevice> device = exec.Device();
-        plan.kernel =
-            [[MPSMatrixMultiplication alloc] initWithDevice:device
-                                              transposeLeft:trans_left
-                                             transposeRight:trans_right
-                                                 resultRows:static_cast<NSUInteger>(n)
-                                              resultColumns:static_cast<NSUInteger>(m)
-                                            interiorColumns:static_cast<NSUInteger>(k)
-                                                      alpha:static_cast<double>(alpha_val)
-                                                       beta:static_cast<double>(beta_val)];
-        if (plan.kernel != nil) {
-          plan.kernel.batchStart = 0;
-          plan.kernel.batchSize = static_cast<NSUInteger>(batch_count);
-          const NSUInteger left_rows = static_cast<NSUInteger>(trans_left ? k : n);
-          const NSUInteger left_cols = static_cast<NSUInteger>(trans_left ? n : k);
-          const NSUInteger right_rows = static_cast<NSUInteger>(trans_right ? m : k);
-          const NSUInteger right_cols = static_cast<NSUInteger>(trans_right ? k : m);
-          const NSUInteger left_row_bytes = static_cast<NSUInteger>(ldb) * sizeof(float);
-          const NSUInteger right_row_bytes = static_cast<NSUInteger>(lda) * sizeof(float);
-          const NSUInteger out_row_bytes = static_cast<NSUInteger>(ldc) * sizeof(float);
-
-          if (batch_count == 1) {
-            plan.desc_left = [MPSMatrixDescriptor matrixDescriptorWithRows:left_rows
-                                                                   columns:left_cols
-                                                                  rowBytes:left_row_bytes
-                                                                  dataType:MPSDataTypeFloat32];
-            plan.desc_right = [MPSMatrixDescriptor matrixDescriptorWithRows:right_rows
-                                                                    columns:right_cols
-                                                                   rowBytes:right_row_bytes
-                                                                   dataType:MPSDataTypeFloat32];
-            plan.desc_out = [MPSMatrixDescriptor matrixDescriptorWithRows:static_cast<NSUInteger>(n)
-                                                                  columns:static_cast<NSUInteger>(m)
-                                                                 rowBytes:out_row_bytes
-                                                                 dataType:MPSDataTypeFloat32];
-          } else {
-            plan.desc_left = [MPSMatrixDescriptor
-                matrixDescriptorWithRows:left_rows
-                                 columns:left_cols
-                                matrices:static_cast<NSUInteger>(batch_count)
-                                rowBytes:left_row_bytes
-                             matrixBytes:static_cast<NSUInteger>(strideB) * sizeof(float)
-                                dataType:MPSDataTypeFloat32];
-            plan.desc_right = [MPSMatrixDescriptor
-                matrixDescriptorWithRows:right_rows
-                                 columns:right_cols
-                                matrices:static_cast<NSUInteger>(batch_count)
-                                rowBytes:right_row_bytes
-                             matrixBytes:static_cast<NSUInteger>(strideA) * sizeof(float)
-                                dataType:MPSDataTypeFloat32];
-            plan.desc_out = [MPSMatrixDescriptor
-                matrixDescriptorWithRows:static_cast<NSUInteger>(n)
-                                 columns:static_cast<NSUInteger>(m)
-                                matrices:static_cast<NSUInteger>(batch_count)
-                                rowBytes:out_row_bytes
-                             matrixBytes:static_cast<NSUInteger>(strideC) * sizeof(float)
-                                dataType:MPSDataTypeFloat32];
-          }
-          plan.lda = lda;
-          plan.ldb = ldb;
-          plan.ldc = ldc;
-          plan.stride_a = strideA;
-          plan.stride_b = strideB;
-          plan.stride_c = strideC;
-          cache.Insert(key, plan);
-        }
-      }
-
-      if (plan.kernel != nil && plan.desc_left != nil && plan.desc_right != nil &&
-          plan.desc_out != nil) {
-        MPSMatrix* mat_left = [[MPSMatrix alloc] initWithBuffer:buf_b.buffer
-                                                         offset:buf_b.offset
-                                                     descriptor:plan.desc_left];
-        MPSMatrix* mat_right = [[MPSMatrix alloc] initWithBuffer:buf_a.buffer
-                                                          offset:buf_a.offset
-                                                      descriptor:plan.desc_right];
-        MPSMatrix* mat_out = [[MPSMatrix alloc] initWithBuffer:buf_c.buffer
-                                                        offset:buf_c.offset
-                                                    descriptor:plan.desc_out];
-
-        const cudaError_t enc_err =
-            exec.EncodeCommandBuffer(stream, ^(id<MTLCommandBuffer> cmd_buf) {
-              [plan.kernel encodeToCommandBuffer:cmd_buf
-                                      leftMatrix:mat_left
-                                     rightMatrix:mat_right
-                                    resultMatrix:mat_out];
-              return true;
-            });
-        if (enc_err == cudaSuccess) {
-          return CUBLAS_STATUS_SUCCESS;
-        }
-      }
-    }
+  if (can_use_mps &&
+      TryExecuteMpsGemm(exec, stream, transa, transb, m, n, k, alpha_val, buf_a, lda, strideA,
+                        buf_b, ldb, strideB, beta_val, buf_c, ldc, strideC, batch_count, false)) {
+    return CUBLAS_STATUS_SUCCESS;
   }
 
   const auto um = static_cast<std::uint32_t>(m);
@@ -371,127 +405,10 @@ GetMpsGemmPlanCache() noexcept {
       ((static_cast<std::size_t>(lda) * sizeof(__half)) % 4u == 0u) &&
       ((static_cast<std::size_t>(ldb) * sizeof(__half)) % 4u == 0u) &&
       ((static_cast<std::size_t>(ldc) * sizeof(__half)) % 4u == 0u) && (buf_a.offset % 4u == 0u) &&
-      (buf_b.offset % 4u == 0u) && (buf_c.offset % 4u == 0u)) {
-    const bool trans_left = (transb != CUBLAS_OP_N);
-    const bool trans_right = (transa != CUBLAS_OP_N);
-    std::uint32_t alpha_bits = 0;
-    std::uint32_t beta_bits = 0;
-    std::memcpy(&alpha_bits, &alpha_val, sizeof(float));
-    std::memcpy(&beta_bits, &beta_val, sizeof(float));
-
-    const GemmPlanKey key{
-        .m = m,
-        .n = n,
-        .k = k,
-        .batch_count = batch_count,
-        .trans_left = trans_left,
-        .trans_right = trans_right,
-        .is_fp16 = true,
-        .alpha_bits = alpha_bits,
-        .beta_bits = beta_bits,
-    };
-
-    @autoreleasepool {
-      auto& cache = GetMpsGemmPlanCache();
-      CachedMpsGemmPlan plan{};
-      if (auto cached = cache.Lookup(key);
-          cached.has_value() && cached->lda == lda && cached->ldb == ldb && cached->ldc == ldc &&
-          cached->stride_a == strideA && cached->stride_b == strideB &&
-          cached->stride_c == strideC) {
-        plan = *cached;
-      } else {
-        id<MTLDevice> device = exec.Device();
-        plan.kernel =
-            [[MPSMatrixMultiplication alloc] initWithDevice:device
-                                              transposeLeft:trans_left
-                                             transposeRight:trans_right
-                                                 resultRows:static_cast<NSUInteger>(n)
-                                              resultColumns:static_cast<NSUInteger>(m)
-                                            interiorColumns:static_cast<NSUInteger>(k)
-                                                      alpha:static_cast<double>(alpha_val)
-                                                       beta:static_cast<double>(beta_val)];
-        if (plan.kernel != nil) {
-          plan.kernel.batchStart = 0;
-          plan.kernel.batchSize = static_cast<NSUInteger>(batch_count);
-          const NSUInteger left_rows = static_cast<NSUInteger>(trans_left ? k : n);
-          const NSUInteger left_cols = static_cast<NSUInteger>(trans_left ? n : k);
-          const NSUInteger right_rows = static_cast<NSUInteger>(trans_right ? m : k);
-          const NSUInteger right_cols = static_cast<NSUInteger>(trans_right ? k : m);
-          const NSUInteger left_row_bytes = static_cast<NSUInteger>(ldb) * sizeof(__half);
-          const NSUInteger right_row_bytes = static_cast<NSUInteger>(lda) * sizeof(__half);
-          const NSUInteger out_row_bytes = static_cast<NSUInteger>(ldc) * sizeof(__half);
-
-          if (batch_count == 1) {
-            plan.desc_left = [MPSMatrixDescriptor matrixDescriptorWithRows:left_rows
-                                                                   columns:left_cols
-                                                                  rowBytes:left_row_bytes
-                                                                  dataType:MPSDataTypeFloat16];
-            plan.desc_right = [MPSMatrixDescriptor matrixDescriptorWithRows:right_rows
-                                                                    columns:right_cols
-                                                                   rowBytes:right_row_bytes
-                                                                   dataType:MPSDataTypeFloat16];
-            plan.desc_out = [MPSMatrixDescriptor matrixDescriptorWithRows:static_cast<NSUInteger>(n)
-                                                                  columns:static_cast<NSUInteger>(m)
-                                                                 rowBytes:out_row_bytes
-                                                                 dataType:MPSDataTypeFloat16];
-          } else {
-            plan.desc_left = [MPSMatrixDescriptor
-                matrixDescriptorWithRows:left_rows
-                                 columns:left_cols
-                                matrices:static_cast<NSUInteger>(batch_count)
-                                rowBytes:left_row_bytes
-                             matrixBytes:static_cast<NSUInteger>(strideB) * sizeof(__half)
-                                dataType:MPSDataTypeFloat16];
-            plan.desc_right = [MPSMatrixDescriptor
-                matrixDescriptorWithRows:right_rows
-                                 columns:right_cols
-                                matrices:static_cast<NSUInteger>(batch_count)
-                                rowBytes:right_row_bytes
-                             matrixBytes:static_cast<NSUInteger>(strideA) * sizeof(__half)
-                                dataType:MPSDataTypeFloat16];
-            plan.desc_out = [MPSMatrixDescriptor
-                matrixDescriptorWithRows:static_cast<NSUInteger>(n)
-                                 columns:static_cast<NSUInteger>(m)
-                                matrices:static_cast<NSUInteger>(batch_count)
-                                rowBytes:out_row_bytes
-                             matrixBytes:static_cast<NSUInteger>(strideC) * sizeof(__half)
-                                dataType:MPSDataTypeFloat16];
-          }
-          plan.lda = lda;
-          plan.ldb = ldb;
-          plan.ldc = ldc;
-          plan.stride_a = strideA;
-          plan.stride_b = strideB;
-          plan.stride_c = strideC;
-          cache.Insert(key, plan);
-        }
-      }
-
-      if (plan.kernel != nil && plan.desc_left != nil && plan.desc_right != nil &&
-          plan.desc_out != nil) {
-        MPSMatrix* mat_left = [[MPSMatrix alloc] initWithBuffer:buf_b.buffer
-                                                         offset:buf_b.offset
-                                                     descriptor:plan.desc_left];
-        MPSMatrix* mat_right = [[MPSMatrix alloc] initWithBuffer:buf_a.buffer
-                                                          offset:buf_a.offset
-                                                      descriptor:plan.desc_right];
-        MPSMatrix* mat_out = [[MPSMatrix alloc] initWithBuffer:buf_c.buffer
-                                                        offset:buf_c.offset
-                                                    descriptor:plan.desc_out];
-
-        const cudaError_t enc_err =
-            exec.EncodeCommandBuffer(stream, ^(id<MTLCommandBuffer> cmd_buf) {
-              [plan.kernel encodeToCommandBuffer:cmd_buf
-                                      leftMatrix:mat_left
-                                     rightMatrix:mat_right
-                                    resultMatrix:mat_out];
-              return true;
-            });
-        if (enc_err == cudaSuccess) {
-          return CUBLAS_STATUS_SUCCESS;
-        }
-      }
-    }
+      (buf_b.offset % 4u == 0u) && (buf_c.offset % 4u == 0u) &&
+      TryExecuteMpsGemm(exec, stream, transa, transb, m, n, k, alpha_val, buf_a, lda, strideA,
+                        buf_b, ldb, strideB, beta_val, buf_c, ldc, strideC, batch_count, true)) {
+    return CUBLAS_STATUS_SUCCESS;
   }
 
   const auto um = static_cast<std::uint32_t>(m);

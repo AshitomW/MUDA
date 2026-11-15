@@ -6,6 +6,51 @@
 #include <metal_stdlib>
 using namespace metal;
 
+inline void AtomicAddFloat(device atomic_uint* addr, float val) {
+  uint expected = atomic_load_explicit(addr, memory_order_relaxed);
+  while (true) {
+    const float current = as_type<float>(expected);
+    const uint desired = as_type<uint>(current + val);
+    if (atomic_compare_exchange_weak_explicit(addr, &expected, desired, memory_order_relaxed,
+                                              memory_order_relaxed)) {
+      break;
+    }
+  }
+}
+
+kernel void muda_cusparse_scale_f32(
+    device float* y [[buffer(0)]],
+    constant uint& n [[buffer(1)]],
+    constant float& beta [[buffer(2)]],
+    uint tid [[thread_position_in_grid]]) {
+  if (tid >= n) return;
+  y[tid] = (beta == 0.0f) ? 0.0f : (beta * y[tid]);
+}
+
+kernel void muda_cusparse_spmv_csr_trans_scatter_f32(
+    device const int* row_offsets [[buffer(0)]],
+    device const int* col_indices [[buffer(1)]],
+    device const float* values [[buffer(2)]],
+    device const float* x [[buffer(3)]],
+    device atomic_uint* y [[buffer(4)]],
+    constant uint& rows [[buffer(5)]],
+    constant int& idx_base [[buffer(6)]],
+    constant float& alpha [[buffer(7)]],
+    uint tid [[thread_position_in_grid]]) {
+  if (tid >= rows) return;
+  const float ax = alpha * x[tid];
+  if (ax == 0.0f) return;
+  const int start = row_offsets[tid] - idx_base;
+  const int end = row_offsets[tid + 1] - idx_base;
+  for (int idx = start; idx < end; ++idx) {
+    const float contrib = ax * values[idx];
+    if (contrib != 0.0f) {
+      const int col = col_indices[idx] - idx_base;
+      AtomicAddFloat(&y[col], contrib);
+    }
+  }
+}
+
 kernel void muda_cusparse_spmv_csr_f32(
     device const int* row_offsets [[buffer(0)]],
     device const int* col_indices [[buffer(1)]],

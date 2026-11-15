@@ -893,7 +893,8 @@ cudnnStatus_t cudnnBatchNormalizationForwardTraining(
     std::lock_guard<std::mutex> lock(ctx->mutex);
     stream = ctx->stream;
   }
-  return (exec.DispatchThreads1D(pipe, c_elems, 256, args, 0, stream) == cudaSuccess)
+  return (exec.DispatchThreadgroups(pipe, MTLSizeMake(c_elems, 1, 1), MTLSizeMake(256, 1, 1), args, 0,
+                                    stream) == cudaSuccess)
              ? CUDNN_STATUS_SUCCESS
              : CUDNN_STATUS_EXECUTION_FAILED;
 }

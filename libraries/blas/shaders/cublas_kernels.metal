@@ -361,6 +361,94 @@ kernel void muda_cublas_reduce_stage2(
   }
 }
 
+kernel void muda_cublas_isamax_stage1(
+    device const float* x [[buffer(0)]],
+    device float* partial_vals [[buffer(1)]],
+    device int* partial_idxs [[buffer(2)]],
+    constant uint& n [[buffer(3)]],
+    constant int& incx [[buffer(4)]],
+    uint gid [[thread_position_in_grid]],
+    uint gsize [[threads_per_grid]],
+    uint lid [[thread_position_in_threadgroup]],
+    uint tgid [[threadgroup_position_in_grid]],
+    uint tsize [[threads_per_threadgroup]],
+    uint simd_lane [[thread_index_in_simdgroup]],
+    uint simd_gid [[simdgroup_index_in_threadgroup]]) {
+  threadgroup float shared_val[8];
+  threadgroup int shared_idx[8];
+
+  float best_val = -1.0f;
+  int best_idx = 0;
+  if (incx > 0 && n > 0) {
+    for (uint i = gid; i < n; i += gsize) {
+      const float v = fabs(x[i * uint(incx)]);
+      const int idx1 = int(i) + 1;
+      if (v > best_val || (v == best_val && (best_idx == 0 || idx1 < best_idx))) {
+        best_val = v;
+        best_idx = idx1;
+      }
+    }
+  }
+
+  const float sg_max = simd_max(best_val);
+  const int cand_idx = (best_val == sg_max && best_idx > 0) ? best_idx : 0x7fffffff;
+  const int sg_min_idx = simd_min(cand_idx);
+  if (simd_lane == 0u) {
+    shared_val[simd_gid] = sg_max;
+    shared_idx[simd_gid] = (sg_min_idx == 0x7fffffff) ? 0 : sg_min_idx;
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+
+  if (simd_gid == 0u) {
+    const uint num_sg = (tsize + 31u) >> 5u;
+    const float v = (simd_lane < num_sg) ? shared_val[simd_lane] : -1.0f;
+    const int idx = (simd_lane < num_sg) ? shared_idx[simd_lane] : 0;
+    const float max_v = simd_max(v);
+    const int c_idx = (v == max_v && idx > 0) ? idx : 0x7fffffff;
+    const int min_idx = simd_min(c_idx);
+    if (simd_lane == 0u) {
+      partial_vals[tgid] = max_v;
+      partial_idxs[tgid] = (min_idx == 0x7fffffff) ? 0 : min_idx;
+    }
+  }
+}
+
+kernel void muda_cublas_isamax_stage2(
+    device const float* partial_vals [[buffer(0)]],
+    device const int* partial_idxs [[buffer(1)]],
+    device int* out [[buffer(2)]],
+    constant uint& count [[buffer(3)]],
+    uint lid [[thread_position_in_threadgroup]],
+    uint tsize [[threads_per_threadgroup]],
+    uint simd_lane [[thread_index_in_simdgroup]],
+    uint simd_gid [[simdgroup_index_in_threadgroup]]) {
+  threadgroup float shared_val[8];
+  threadgroup int shared_idx[8];
+
+  const float v = (lid < count) ? partial_vals[lid] : -1.0f;
+  const int idx = (lid < count) ? partial_idxs[lid] : 0;
+  const float sg_max = simd_max(v);
+  const int cand_idx = (v == sg_max && idx > 0) ? idx : 0x7fffffff;
+  const int sg_min_idx = simd_min(cand_idx);
+  if (simd_lane == 0u) {
+    shared_val[simd_gid] = sg_max;
+    shared_idx[simd_gid] = (sg_min_idx == 0x7fffffff) ? 0 : sg_min_idx;
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+
+  if (simd_gid == 0u) {
+    const uint num_sg = (tsize + 31u) >> 5u;
+    const float sv = (simd_lane < num_sg) ? shared_val[simd_lane] : -1.0f;
+    const int sidx = (simd_lane < num_sg) ? shared_idx[simd_lane] : 0;
+    const float max_v = simd_max(sv);
+    const int c_idx = (sv == max_v && sidx > 0) ? sidx : 0x7fffffff;
+    const int min_idx = simd_min(c_idx);
+    if (simd_lane == 0u) {
+      out[0] = (min_idx == 0x7fffffff) ? 0 : min_idx;
+    }
+  }
+}
+
 kernel void muda_cublas_isamax(
     device const float* x [[buffer(0)]],
     device int* out [[buffer(1)]],
@@ -530,7 +618,7 @@ kernel void muda_cublas_sgemm_simdgroup(
   const uint tid = simd_id * 32u + simd_lane;
   const bool full_tile = (base_m + 32u <= M) && (base_n + 32u <= N);
 
-  threadgroup float s_left[512];   // 32 (N) x 16 (K)
+  threadgroup float s_left[576];   // 32 (N) x 18 (K + 2 pad to avoid bank conflicts)
   threadgroup float s_right[512];  // 16 (K) x 32 (M)
 
   simdgroup_float8x8 acc00 = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
@@ -545,7 +633,7 @@ kernel void muda_cublas_sgemm_simdgroup(
         const uint ck = idx & 15u;
         const uint gn = base_n + rn;
         const uint gk = k_base + ck;
-        s_left[rn * 16u + ck] = (transb == 0u) ? B[gk + gn * ldb] : B[gn + gk * ldb];
+        s_left[rn * 18u + ck] = (transb == 0u) ? B[gk + gn * ldb] : B[gn + gk * ldb];
 
         const uint rk = idx >> 5u;
         const uint cm = idx & 31u;
@@ -563,7 +651,7 @@ kernel void muda_cublas_sgemm_simdgroup(
         if (gk < K && gn < N) {
           val_b = (transb == 0u) ? B[gk + gn * ldb] : B[gn + gk * ldb];
         }
-        s_left[rn * 16u + ck] = val_b;
+        s_left[rn * 18u + ck] = val_b;
 
         const uint rk = idx >> 5u;
         const uint cm = idx & 31u;
@@ -583,8 +671,8 @@ kernel void muda_cublas_sgemm_simdgroup(
       simdgroup_float8x8 fl1;
       simdgroup_float8x8 fr0;
       simdgroup_float8x8 fr1;
-      simdgroup_load(fl0, s_left + (sg_rn + 0u) * 16u + ks, 16u);
-      simdgroup_load(fl1, s_left + (sg_rn + 8u) * 16u + ks, 16u);
+      simdgroup_load(fl0, s_left + (sg_rn + 0u) * 18u + ks, 18u);
+      simdgroup_load(fl1, s_left + (sg_rn + 8u) * 18u + ks, 18u);
       simdgroup_load(fr0, s_right + ks * 32u + sg_cm + 0u, 32u);
       simdgroup_load(fr1, s_right + ks * 32u + sg_cm + 8u, 32u);
 
@@ -660,7 +748,7 @@ kernel void muda_cublas_sgemm_strided_batched_simdgroup(
   const uint tid = simd_id * 32u + simd_lane;
   const bool full_tile = (base_m + 32u <= M) && (base_n + 32u <= N);
 
-  threadgroup float s_left[512];
+  threadgroup float s_left[576];
   threadgroup float s_right[512];
 
   simdgroup_float8x8 acc00 = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
@@ -675,7 +763,7 @@ kernel void muda_cublas_sgemm_strided_batched_simdgroup(
         const uint ck = idx & 15u;
         const uint gn = base_n + rn;
         const uint gk = k_base + ck;
-        s_left[rn * 16u + ck] = (transb == 0u) ? Bb[gk + gn * ldb] : Bb[gn + gk * ldb];
+        s_left[rn * 18u + ck] = (transb == 0u) ? Bb[gk + gn * ldb] : Bb[gn + gk * ldb];
 
         const uint rk = idx >> 5u;
         const uint cm = idx & 31u;
@@ -693,7 +781,7 @@ kernel void muda_cublas_sgemm_strided_batched_simdgroup(
         if (gk < K && gn < N) {
           val_b = (transb == 0u) ? Bb[gk + gn * ldb] : Bb[gn + gk * ldb];
         }
-        s_left[rn * 16u + ck] = val_b;
+        s_left[rn * 18u + ck] = val_b;
 
         const uint rk = idx >> 5u;
         const uint cm = idx & 31u;
@@ -713,8 +801,8 @@ kernel void muda_cublas_sgemm_strided_batched_simdgroup(
       simdgroup_float8x8 fl1;
       simdgroup_float8x8 fr0;
       simdgroup_float8x8 fr1;
-      simdgroup_load(fl0, s_left + (sg_rn + 0u) * 16u + ks, 16u);
-      simdgroup_load(fl1, s_left + (sg_rn + 8u) * 16u + ks, 16u);
+      simdgroup_load(fl0, s_left + (sg_rn + 0u) * 18u + ks, 18u);
+      simdgroup_load(fl1, s_left + (sg_rn + 8u) * 18u + ks, 18u);
       simdgroup_load(fr0, s_right + ks * 32u + sg_cm + 0u, 32u);
       simdgroup_load(fr1, s_right + ks * 32u + sg_cm + 8u, 32u);
 
@@ -790,7 +878,7 @@ kernel void muda_cublas_hgemm_strided_batched_simdgroup(
   const uint tid = simd_id * 32u + simd_lane;
   const bool full_tile = (base_m + 32u <= M) && (base_n + 32u <= N);
 
-  threadgroup float s_left[512];
+  threadgroup float s_left[576];
   threadgroup float s_right[512];
 
   simdgroup_float8x8 acc00 = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
@@ -805,7 +893,7 @@ kernel void muda_cublas_hgemm_strided_batched_simdgroup(
         const uint ck = idx & 15u;
         const uint gn = base_n + rn;
         const uint gk = k_base + ck;
-        s_left[rn * 16u + ck] = float((transb == 0u) ? Bb[gk + gn * ldb] : Bb[gn + gk * ldb]);
+        s_left[rn * 18u + ck] = float((transb == 0u) ? Bb[gk + gn * ldb] : Bb[gn + gk * ldb]);
 
         const uint rk = idx >> 5u;
         const uint cm = idx & 31u;
@@ -823,7 +911,7 @@ kernel void muda_cublas_hgemm_strided_batched_simdgroup(
         if (gk < K && gn < N) {
           val_b = float((transb == 0u) ? Bb[gk + gn * ldb] : Bb[gn + gk * ldb]);
         }
-        s_left[rn * 16u + ck] = val_b;
+        s_left[rn * 18u + ck] = val_b;
 
         const uint rk = idx >> 5u;
         const uint cm = idx & 31u;
@@ -843,8 +931,8 @@ kernel void muda_cublas_hgemm_strided_batched_simdgroup(
       simdgroup_float8x8 fl1;
       simdgroup_float8x8 fr0;
       simdgroup_float8x8 fr1;
-      simdgroup_load(fl0, s_left + (sg_rn + 0u) * 16u + ks, 16u);
-      simdgroup_load(fl1, s_left + (sg_rn + 8u) * 16u + ks, 16u);
+      simdgroup_load(fl0, s_left + (sg_rn + 0u) * 18u + ks, 18u);
+      simdgroup_load(fl1, s_left + (sg_rn + 8u) * 18u + ks, 18u);
       simdgroup_load(fr0, s_right + ks * 32u + sg_cm + 0u, 32u);
       simdgroup_load(fr1, s_right + ks * 32u + sg_cm + 8u, 32u);
 
