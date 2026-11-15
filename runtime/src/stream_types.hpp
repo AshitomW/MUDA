@@ -18,7 +18,15 @@
 namespace muda::runtime::cudart {
 
 inline constexpr std::size_t kMaxEncoderBufferSlots = 31;
-inline constexpr std::size_t kMaxDirtyBuffers = 16;
+inline constexpr std::size_t kMaxDirtyBuffers = kMaxEncoderBufferSlots;
+
+struct ComputeDispatchArg {
+  bool is_buffer = false;
+  __unsafe_unretained id<MTLBuffer> buffer = nil;
+  std::size_t offset = 0;
+  const void* bytes = nullptr;
+  std::size_t size = 0;
+};
 
 struct BoundBufferSlot {
   const void* buffer_ptr = nullptr;

@@ -7,6 +7,7 @@
 
 #import <Metal/Metal.h>
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -112,10 +113,16 @@ class LibraryExecutor {
  private:
   LibraryExecutor() = default;
 
+  struct PipelineEntry {
+    id<MTLComputePipelineState> pipeline = nil;
+    std::size_t max_threads_per_tg = 256;
+  };
+
   mutable std::shared_mutex mutex_;
+  std::atomic<std::uint64_t> epoch_{1};
   id<MTLDevice> cached_device_ = nil;
   std::unordered_map<std::string, id<MTLLibrary>> libraries_;
-  std::unordered_map<std::string, id<MTLComputePipelineState>> pipelines_;
+  std::unordered_map<std::string, PipelineEntry> pipelines_;
 };
 
 }  // namespace muda::libraries

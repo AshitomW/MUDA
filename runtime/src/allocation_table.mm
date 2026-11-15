@@ -14,11 +14,12 @@ namespace {
 struct MruEntry {
   std::uint64_t epoch = 0;
   DeviceAddress base{0};
+  std::size_t size = 0;
   std::size_t capacity = 0;
-  const AllocationRecord* record = nullptr;
+  __unsafe_unretained id<MTLBuffer> buffer = nil;
 };
 
-constexpr std::size_t kMruSize = 4;
+constexpr std::size_t kMruSize = 8;
 thread_local std::array<MruEntry, kMruSize> tl_mru{};
 thread_local std::size_t tl_mru_cursor = 0;
 
@@ -55,27 +56,23 @@ std::optional<AllocationRecord> AllocationTable::Remove(DeviceAddress base_addre
   return removed;
 }
 
-const AllocationRecord* AllocationTable::FindContainingMruOnly(
-    DeviceAddress address) const noexcept {
+bool AllocationTable::FindContainingMruOnly(DeviceAddress address,
+                                          AllocationMruHit* out_hit) const noexcept {
   const std::uint64_t cur_epoch = epoch_.load(std::memory_order_acquire);
   for (const MruEntry& entry : tl_mru) {
-    if (entry.epoch == cur_epoch && entry.record != nullptr && address.value >= entry.base.value &&
+    if (entry.epoch == cur_epoch && entry.buffer != nil && address.value >= entry.base.value &&
         (address.value - entry.base.value) < entry.capacity) {
-      return entry.record;
+      out_hit->base_address = entry.base;
+      out_hit->size = entry.size;
+      out_hit->buffer = entry.buffer;
+      return true;
     }
   }
-  return nullptr;
+  return false;
 }
 
 const AllocationRecord* AllocationTable::FindContaining(DeviceAddress address) const noexcept {
   const std::uint64_t cur_epoch = epoch_.load(std::memory_order_acquire);
-  for (const MruEntry& entry : tl_mru) {
-    if (entry.epoch == cur_epoch && entry.record != nullptr && address.value >= entry.base.value &&
-        (address.value - entry.base.value) < entry.capacity) {
-      return entry.record;
-    }
-  }
-
   if (records_.empty()) {
     return nullptr;
   }
@@ -89,8 +86,9 @@ const AllocationRecord* AllocationTable::FindContaining(DeviceAddress address) c
       (address.value - record.base_address.value) < record.capacity) {
     tl_mru[tl_mru_cursor].epoch = cur_epoch;
     tl_mru[tl_mru_cursor].base = record.base_address;
+    tl_mru[tl_mru_cursor].size = record.size;
     tl_mru[tl_mru_cursor].capacity = record.capacity;
-    tl_mru[tl_mru_cursor].record = &record;
+    tl_mru[tl_mru_cursor].buffer = record.buffer;
     tl_mru_cursor = (tl_mru_cursor + 1) % kMruSize;
     return &record;
   }
