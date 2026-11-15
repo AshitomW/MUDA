@@ -48,10 +48,14 @@ std::string InlineVirtualHeaders(std::string_view src,
     return std::string(src);
   }
   std::string out;
+  out.reserve(src.size() + 256);
+  std::vector<std::pair<std::string, std::string>> include_patterns;
+  include_patterns.reserve(headers.size());
   for (const auto& [inc_name, content] : headers) {
     out += "// inlined virtual header: " + inc_name + "\n";
     out += content;
     out += "\n";
+    include_patterns.emplace_back("\"" + inc_name + "\"", "<" + inc_name + ">");
   }
   std::size_t pos = 0;
   while (pos < src.size()) {
@@ -60,14 +64,13 @@ std::string InlineVirtualHeaders(std::string_view src,
     const std::string_view line = src.substr(pos, end - pos);
 
     bool matched_virtual_include = false;
-    for (const auto& [inc_name, _] : headers) {
-      const std::string quoted = "\"" + inc_name + "\"";
-      const std::string angled = "<" + inc_name + ">";
-      if (line.find("#include") != std::string_view::npos &&
-          (line.find(quoted) != std::string_view::npos ||
-           line.find(angled) != std::string_view::npos)) {
-        matched_virtual_include = true;
-        break;
+    if (line.find("#include") != std::string_view::npos) {
+      for (const auto& [quoted, angled] : include_patterns) {
+        if (line.find(quoted) != std::string_view::npos ||
+            line.find(angled) != std::string_view::npos) {
+          matched_virtual_include = true;
+          break;
+        }
       }
     }
     if (!matched_virtual_include) {

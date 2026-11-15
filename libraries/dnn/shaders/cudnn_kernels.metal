@@ -84,7 +84,7 @@ kernel void muda_cudnn_conv2d_fwd_implicit_gemm(
   const uint sg_cn = (simd_id & 1u) * 16u;
   const uint tid = simd_id * 32u + simd_lane;
 
-  threadgroup float s_w[512];  // 32 (M = c_out) x 16 (K)
+  threadgroup float s_w[576];  // 32 (M = c_out) x 18 (K + 2 pad to avoid bank conflicts)
   threadgroup float s_x[512];  // 16 (K) x 32 (N = batch * h_out * w_out)
   threadgroup int4 s_k_info[16];
 
@@ -131,7 +131,7 @@ kernel void muda_cudnn_conv2d_fwd_implicit_gemm(
       const uint ck = idx & 15u;
       const uint gm = base_m + rm;
       const uint gk = k_base + ck;
-      s_w[rm * 16u + ck] = (gm < M && gk < K) ? w[gm * K + gk] : 0.0f;
+      s_w[rm * 18u + ck] = (gm < M && gk < K) ? w[gm * K + gk] : 0.0f;
 
       const uint rk = idx >> 5u;
       const int4 ki = s_k_info[rk];
@@ -152,8 +152,8 @@ kernel void muda_cudnn_conv2d_fwd_implicit_gemm(
       simdgroup_float8x8 fw1;
       simdgroup_float8x8 fx0;
       simdgroup_float8x8 fx1;
-      simdgroup_load(fw0, s_w + (sg_rm + 0u) * 16u + ks, 16u);
-      simdgroup_load(fw1, s_w + (sg_rm + 8u) * 16u + ks, 16u);
+      simdgroup_load(fw0, s_w + (sg_rm + 0u) * 18u + ks, 18u);
+      simdgroup_load(fw1, s_w + (sg_rm + 8u) * 18u + ks, 18u);
       simdgroup_load(fx0, s_x + ks * 32u + sg_cn + 0u, 32u);
       simdgroup_load(fx1, s_x + ks * 32u + sg_cn + 8u, 32u);
 
@@ -623,55 +623,92 @@ kernel void muda_cudnn_batchnorm_fwd_training(
     constant float& exp_avg_factor [[buffer(9)]],
     constant uint& has_running [[buffer(10)]],
     constant uint& has_save [[buffer(11)]],
-    uint ic [[thread_position_in_grid]]) {
+    uint ic [[threadgroup_position_in_grid]],
+    uint lid [[thread_position_in_threadgroup]],
+    uint tsize [[threads_per_threadgroup]],
+    uint simd_lane [[thread_index_in_simdgroup]],
+    uint simd_gid [[simdgroup_index_in_threadgroup]]) {
   if (int(ic) >= p.c) return;
-  const int m_count = p.n * p.h * p.w;
+  const int hw = p.h * p.w;
+  const int m_count = p.n * hw;
   const float inv_m = 1.0f / float(m_count);
 
-  float sum = 0.0f;
-  for (int b = 0; b < p.n; ++b) {
-    for (int ih = 0; ih < p.h; ++ih) {
-      for (int iw = 0; iw < p.w; ++iw) {
-        sum += x[b * p.x_ns + int(ic) * p.x_cs + ih * p.x_hs + iw * p.x_ws];
+  threadgroup float tg_partials[8];
+  threadgroup float tg_mean;
+  threadgroup float tg_inv_std;
+
+  float local_sum = 0.0f;
+  for (int idx = int(lid); idx < m_count; idx += int(tsize)) {
+    const int b = idx / hw;
+    const int rem = idx - b * hw;
+    const int ih = rem / p.w;
+    const int iw = rem - ih * p.w;
+    local_sum += x[b * p.x_ns + int(ic) * p.x_cs + ih * p.x_hs + iw * p.x_ws];
+  }
+  const float sg_sum = simd_sum(local_sum);
+  if (simd_lane == 0u) {
+    tg_partials[simd_gid] = sg_sum;
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  if (simd_gid == 0u) {
+    const uint num_sg = (tsize + 31u) >> 5u;
+    const float val = (simd_lane < num_sg) ? tg_partials[simd_lane] : 0.0f;
+    const float total_sum = simd_sum(val);
+    if (simd_lane == 0u) {
+      tg_mean = total_sum * inv_m;
+    }
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  const float batch_mean = tg_mean;
+
+  float local_sq = 0.0f;
+  for (int idx = int(lid); idx < m_count; idx += int(tsize)) {
+    const int b = idx / hw;
+    const int rem = idx - b * hw;
+    const int ih = rem / p.w;
+    const int iw = rem - ih * p.w;
+    const float d = x[b * p.x_ns + int(ic) * p.x_cs + ih * p.x_hs + iw * p.x_ws] - batch_mean;
+    local_sq = fma(d, d, local_sq);
+  }
+  const float sg_sq = simd_sum(local_sq);
+  if (simd_lane == 0u) {
+    tg_partials[simd_gid] = sg_sq;
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  if (simd_gid == 0u) {
+    const uint num_sg = (tsize + 31u) >> 5u;
+    const float val = (simd_lane < num_sg) ? tg_partials[simd_lane] : 0.0f;
+    const float total_sq = simd_sum(val);
+    if (simd_lane == 0u) {
+      const float batch_var = total_sq * inv_m;
+      const float unbiased_var = (m_count > 1) ? (total_sq / float(m_count - 1)) : batch_var;
+      const float inv_std = rsqrt(batch_var + p.coef);
+      tg_inv_std = inv_std;
+      if (has_save != 0u) {
+        save_mean[ic] = batch_mean;
+        save_inv_var[ic] = inv_std;
+      }
+      if (has_running != 0u) {
+        running_mean[ic] = (1.0f - exp_avg_factor) * running_mean[ic] + exp_avg_factor * batch_mean;
+        running_var[ic] = (1.0f - exp_avg_factor) * running_var[ic] + exp_avg_factor * unbiased_var;
       }
     }
   }
-  const float batch_mean = sum * inv_m;
+  threadgroup_barrier(mem_flags::mem_threadgroup);
 
-  float sq_sum = 0.0f;
-  for (int b = 0; b < p.n; ++b) {
-    for (int ih = 0; ih < p.h; ++ih) {
-      for (int iw = 0; iw < p.w; ++iw) {
-        const float d = x[b * p.x_ns + int(ic) * p.x_cs + ih * p.x_hs + iw * p.x_ws] - batch_mean;
-        sq_sum = fma(d, d, sq_sum);
-      }
-    }
-  }
-  const float batch_var = sq_sum * inv_m;
-  const float unbiased_var = (m_count > 1) ? (sq_sum / float(m_count - 1)) : batch_var;
-  const float inv_std = rsqrt(batch_var + p.coef);
-
-  if (has_save != 0u) {
-    save_mean[ic] = batch_mean;
-    save_inv_var[ic] = inv_std;
-  }
-  if (has_running != 0u) {
-    running_mean[ic] = (1.0f - exp_avg_factor) * running_mean[ic] + exp_avg_factor * batch_mean;
-    running_var[ic] = (1.0f - exp_avg_factor) * running_var[ic] + exp_avg_factor * unbiased_var;
-  }
-
+  const float inv_std = tg_inv_std;
   const float sc = scale[ic];
   const float bi = bias[ic];
-  for (int b = 0; b < p.n; ++b) {
-    for (int ih = 0; ih < p.h; ++ih) {
-      for (int iw = 0; iw < p.w; ++iw) {
-        const int x_idx = b * p.x_ns + int(ic) * p.x_cs + ih * p.x_hs + iw * p.x_ws;
-        const int y_idx = b * p.y_ns + int(ic) * p.y_cs + ih * p.y_hs + iw * p.y_ws;
-        const float norm_val = fma((x[x_idx] - batch_mean) * inv_std, sc, bi);
-        const float prev_y = (p.beta == 0.0f) ? 0.0f : (p.beta * y[y_idx]);
-        y[y_idx] = fma(p.alpha, norm_val, prev_y);
-      }
-    }
+  for (int idx = int(lid); idx < m_count; idx += int(tsize)) {
+    const int b = idx / hw;
+    const int rem = idx - b * hw;
+    const int ih = rem / p.w;
+    const int iw = rem - ih * p.w;
+    const int x_idx = b * p.x_ns + int(ic) * p.x_cs + ih * p.x_hs + iw * p.x_ws;
+    const int y_idx = b * p.y_ns + int(ic) * p.y_cs + ih * p.y_hs + iw * p.y_ws;
+    const float norm_val = fma((x[x_idx] - batch_mean) * inv_std, sc, bi);
+    const float prev_y = (p.beta == 0.0f) ? 0.0f : (p.beta * y[y_idx]);
+    y[y_idx] = fma(p.alpha, norm_val, prev_y);
   }
 }
 

@@ -75,6 +75,10 @@ class MemoryManager {
   [[nodiscard]] bool ResolveBufferFast(DeviceAddress addr,
                                        __unsafe_unretained id<MTLBuffer>* out_buffer,
                                        std::size_t* out_offset) const noexcept;
+  [[nodiscard]] bool ResolveEndpointFast(DeviceAddress addr,
+                                         __unsafe_unretained id<MTLBuffer>* out_buffer,
+                                         std::size_t* out_offset,
+                                         std::size_t* out_size) const noexcept;
   [[nodiscard]] bool ResolveEndpoint(DeviceAddress addr,
                                      ResolvedEndpoint* out_endpoint) const noexcept;
   void ResolveEndpointsPair(DeviceAddress dst_addr, DeviceAddress src_addr,

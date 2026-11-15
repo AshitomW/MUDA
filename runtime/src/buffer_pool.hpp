@@ -8,6 +8,7 @@
 #import <Metal/Metal.h>
 
 #include <array>
+#include <atomic>
 #include <bit>
 #include <cstddef>
 #include <cstdint>
@@ -50,13 +51,13 @@ class BufferPool {
 
  private:
   struct Bin {
+    mutable std::mutex mutex;
     std::size_t capacity = 0;
     std::vector<id<MTLBuffer>> free_buffers;
   };
 
-  mutable std::mutex mutex_;
   std::array<Bin, kBufferPoolNumBins> bins_{};
-  std::size_t total_cached_bytes_ = 0;
+  std::atomic<std::size_t> total_cached_bytes_{0};
   std::size_t max_total_bytes_ = kBufferPoolDefaultMaxTotalBytes;
   bool enabled_ = true;
 };

@@ -10,6 +10,7 @@
 #include <atomic>
 #include <memory>
 #include <mutex>
+#include <span>
 #include <vector>
 
 #include "cuda_runtime.h"
@@ -44,6 +45,10 @@ class StreamManager {
   void FlushStreamLocked(StreamState* stream) noexcept;
   void FlushDefaultStreamLocked() noexcept;
   void EndActiveEncodersLocked(StreamState* stream) noexcept;
+  cudaError_t EncodeComputeDispatch(id<MTLComputePipelineState> pipeline, MTLSize grid_size,
+                                    MTLSize block_size, std::span<const ComputeDispatchArg> args,
+                                    std::size_t shared_mem_bytes, id<MTLCommandQueue> target_queue,
+                                    StreamState* stream_state) noexcept;
   void CommitStreamCommandBufferLocked(StreamState* stream_state,
                                        id<MTLCommandBuffer> command_buffer) noexcept;
   void CommitStreamCommandBuffer(StreamState* stream, id<MTLCommandBuffer> command_buffer) noexcept;

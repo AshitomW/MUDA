@@ -195,6 +195,9 @@ def compile_cuda_extension(
         src_path.write_text(str(cu_source), encoding="utf-8")
 
     dylib_path = out_dir / f"lib{name}.dylib"
+    if dylib_path.exists() and not extra_cflags:
+        return MudaCudaExtension(name=name, dylib_path=dylib_path, runtime=runtime)
+
     cmd: List[str] = [
         str(nvcc_bin),
         "-shared",
@@ -218,6 +221,23 @@ def compile_cuda_extension(
     return MudaCudaExtension(name=name, dylib_path=dylib_path, runtime=runtime)
 
 
+_DEFAULT_RUNTIME: Optional["MudaRuntimeBindings"] = None
+_CUBLAS_HANDLE: Optional[ctypes.c_void_p] = None
+
+
+def _get_default_runtime_and_cublas_handle() -> Tuple["MudaRuntimeBindings", ctypes.c_void_p]:
+    global _DEFAULT_RUNTIME, _CUBLAS_HANDLE
+    if _DEFAULT_RUNTIME is None:
+        _DEFAULT_RUNTIME = MudaRuntimeBindings()
+    if _CUBLAS_HANDLE is None:
+        handle = ctypes.c_void_p()
+        status = _DEFAULT_RUNTIME.libcublas.cublasCreate_v2(ctypes.byref(handle))
+        if status != 0:
+            raise RuntimeError(f"cublasCreate_v2 failed with status {status}")
+        _CUBLAS_HANDLE = handle
+    return _DEFAULT_RUNTIME, _CUBLAS_HANDLE
+
+
 def muda_cublas_matmul(a_tensor, b_tensor):
     """
     Execute matrix multiplication C = A @ B on 2D float32 PyTorch tensors using MUDA's
@@ -236,7 +256,7 @@ def muda_cublas_matmul(a_tensor, b_tensor):
     _, n = b_contig.shape
     c_contig = torch.empty((m, n), dtype=torch.float32, device="cpu")
 
-    rt = MudaRuntimeBindings()
+    rt, handle = _get_default_runtime_and_cublas_handle()
     bytes_a = a_contig.numel() * 4
     bytes_b = b_contig.numel() * 4
     bytes_c = c_contig.numel() * 4
@@ -244,14 +264,9 @@ def muda_cublas_matmul(a_tensor, b_tensor):
     d_a = rt.malloc(bytes_a)
     d_b = rt.malloc(bytes_b)
     d_c = rt.malloc(bytes_c)
-    handle = ctypes.c_void_p()
     try:
         rt.copy_to_device(d_a, a_contig.data_ptr(), bytes_a)
         rt.copy_to_device(d_b, b_contig.data_ptr(), bytes_b)
-
-        status = rt.libcublas.cublasCreate_v2(ctypes.byref(handle))
-        if status != 0:
-            raise RuntimeError(f"cublasCreate_v2 failed with status {status}")
 
         alpha = ctypes.c_float(1.0)
         beta = ctypes.c_float(0.0)
@@ -278,8 +293,6 @@ def muda_cublas_matmul(a_tensor, b_tensor):
         rt.synchronize()
         rt.copy_to_host(c_contig.data_ptr(), d_c, bytes_c)
     finally:
-        if handle and handle.value:
-            rt.libcublas.cublasDestroy_v2(handle)
         rt.free(d_c)
         rt.free(d_b)
         rt.free(d_a)

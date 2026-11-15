@@ -54,6 +54,12 @@ struct AllocationRecord {
   id<MTLBuffer> buffer = nil;
 };
 
+struct AllocationMruHit {
+  DeviceAddress base_address;
+  std::size_t size = 0;
+  __unsafe_unretained id<MTLBuffer> buffer = nil;
+};
+
 class AllocationTable {
  public:
   AllocationTable() = default;
@@ -65,7 +71,8 @@ class AllocationTable {
   void Insert(AllocationRecord record);
   [[nodiscard]] std::optional<AllocationRecord> Remove(DeviceAddress base_address);
   [[nodiscard]] const AllocationRecord* FindContaining(DeviceAddress address) const noexcept;
-  [[nodiscard]] const AllocationRecord* FindContainingMruOnly(DeviceAddress address) const noexcept;
+  [[nodiscard]] bool FindContainingMruOnly(DeviceAddress address,
+                                           AllocationMruHit* out_hit) const noexcept;
   [[nodiscard]] static bool IsRangeValid(const AllocationRecord* record, DeviceAddress address,
                                          std::size_t count) noexcept;
   [[nodiscard]] static bool IsOffsetValid(const AllocationRecord* record,

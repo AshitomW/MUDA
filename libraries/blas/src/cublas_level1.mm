@@ -582,6 +582,69 @@ cublasStatus_t cublasIsamax_v2(cublasHandle_t handle, int n, const float* x, int
     return CUBLAS_STATUS_INVALID_VALUE;
   }
 
+  cublasPointerMode_t mode = CUBLAS_POINTER_MODE_HOST;
+  cudaStream_t stream = nullptr;
+  id<MTLBuffer> scratch = nil;
+  {
+    std::lock_guard<std::mutex> lock(ctx->mutex);
+    mode = ctx->pointer_mode;
+    stream = ctx->stream;
+    scratch = ctx->scratch_buffer;
+  }
+  if (scratch == nil) {
+    return CUBLAS_STATUS_INTERNAL_ERROR;
+  }
+
+  ResolvedBuffer dev_out;
+  if (mode == CUBLAS_POINTER_MODE_DEVICE) {
+    if (!exec.ResolveDeviceBuffer(result, sizeof(int), &dev_out)) {
+      return CUBLAS_STATUS_INVALID_VALUE;
+    }
+  }
+
+  id<MTLComputePipelineState> stage1_pipe = GetCublasPipeline("muda_cublas_isamax_stage1");
+  id<MTLComputePipelineState> stage2_pipe = GetCublasPipeline("muda_cublas_isamax_stage2");
+  if (stage1_pipe != nil && stage2_pipe != nil) {
+    const auto un = static_cast<std::uint32_t>(n);
+    const std::uint32_t num_groups = std::min<std::uint32_t>(64u, (un + 255u) / 256u);
+    const std::array<ShaderArg, 5> s1_args = {
+        ShaderArg::Buffer(buf_x),
+        ShaderArg::RawBuffer(scratch, 64),
+        ShaderArg::RawBuffer(scratch, 320),
+        ShaderArg::Value(un),
+        ShaderArg::Value(incx),
+    };
+    if (exec.DispatchThreadgroups(stage1_pipe, MTLSizeMake(num_groups, 1, 1),
+                                  MTLSizeMake(256, 1, 1), s1_args, 0, stream) != cudaSuccess) {
+      return CUBLAS_STATUS_EXECUTION_FAILED;
+    }
+
+    const ShaderArg out_arg = (mode == CUBLAS_POINTER_MODE_DEVICE)
+                                  ? ShaderArg::Buffer(dev_out)
+                                  : ShaderArg::RawBuffer(scratch, 0);
+    const std::array<ShaderArg, 4> s2_args = {
+        ShaderArg::RawBuffer(scratch, 64),
+        ShaderArg::RawBuffer(scratch, 320),
+        out_arg,
+        ShaderArg::Value(num_groups),
+    };
+    if (exec.DispatchThreadgroups(stage2_pipe, MTLSizeMake(1, 1, 1), MTLSizeMake(64, 1, 1),
+                                  s2_args, 0, stream) != cudaSuccess) {
+      return CUBLAS_STATUS_EXECUTION_FAILED;
+    }
+    if (mode == CUBLAS_POINTER_MODE_HOST) {
+      if (exec.SynchronizeStream(stream) != cudaSuccess) {
+        return CUBLAS_STATUS_EXECUTION_FAILED;
+      }
+      const auto* src = static_cast<const std::uint8_t*>([scratch contents]);
+      if (src == nullptr) {
+        return CUBLAS_STATUS_MAPPING_ERROR;
+      }
+      std::memcpy(result, src, sizeof(int));
+    }
+    return CUBLAS_STATUS_SUCCESS;
+  }
+
   const auto un = static_cast<std::uint32_t>(n);
   const std::array<ShaderArg, 4> args = {
       ShaderArg::Buffer(buf_x),

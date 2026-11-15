@@ -6,7 +6,9 @@ add_library(
   src/cuda_runtime.mm
   src/device.mm
   src/device_manager.mm
-  src/driver_api.mm
+  src/driver/driver_context.mm
+  src/driver/driver_exec.mm
+  src/driver/driver_memory.mm
   src/error_state.cpp
   src/event_manager.mm
   src/kernel.mm
@@ -48,7 +50,9 @@ add_library(
   src/cuda_runtime.mm
   src/device.mm
   src/device_manager.mm
-  src/driver_api.mm
+  src/driver/driver_context.mm
+  src/driver/driver_exec.mm
+  src/driver/driver_memory.mm
   src/error_state.cpp
   src/event_manager.mm
   src/kernel.mm

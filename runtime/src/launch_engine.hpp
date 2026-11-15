@@ -18,14 +18,6 @@
 
 namespace muda::runtime::cudart {
 
-struct BoundArgument {
-  mudaKernelParamKind kind = mudaKernelParamBuffer;
-  __unsafe_unretained id<MTLBuffer> buffer = nil;
-  std::size_t offset = 0;
-  const void* bytes = nullptr;
-  std::size_t size = 0;
-};
-
 class LaunchEngine {
  public:
   LaunchEngine() = default;
@@ -70,13 +62,7 @@ class LaunchEngine {
 
   cudaError_t BindLaunchArguments(const RegisteredKernel& kernel, void** args,
                                   const MemoryManager& memory,
-                                  std::span<BoundArgument> out_bound) const noexcept;
-
-  cudaError_t EncodeAndCommitLaunch(const RegisteredKernel& kernel,
-                                    std::span<const BoundArgument> bound_args, dim3 grid_dim,
-                                    dim3 block_dim, std::size_t shared_mem,
-                                    id<MTLCommandQueue> target_queue, StreamState* stream_state,
-                                    StreamManager& streams) noexcept;
+                                  std::span<ComputeDispatchArg> out_bound) const noexcept;
 
   mutable std::shared_mutex mutex_;
   KernelRegistry kernels_;

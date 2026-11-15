@@ -293,11 +293,34 @@ std::string SassLifter::LiftToMsl(const CubinKernel& kernel,
   ss << "    uint lane_id [[thread_index_in_simdgroup]])\n";
   ss << "{\n";
 
+  // Compute tightest register bound referenced by this kernel to avoid R[256] spilling.
+  uint32_t max_reg = (kernel.register_count > 0 && kernel.register_count < 255)
+                         ? static_cast<uint32_t>(kernel.register_count - 1)
+                         : 0;
+  for (const SassInstruction& inst : instructions) {
+    auto scan_ops = [&](const std::vector<SassOperand>& ops) {
+      for (const SassOperand& op : ops) {
+        if ((op.kind == SassOperandKind::kReg || op.kind == SassOperandKind::kAddress) &&
+            op.reg_idx < 255) {
+          const uint32_t bound =
+              (op.kind == SassOperandKind::kAddress && op.reg_idx + 1 < 255)
+                  ? static_cast<uint32_t>(op.reg_idx + 1)
+                  : static_cast<uint32_t>(op.reg_idx);
+          if (bound > max_reg) {
+            max_reg = bound;
+          }
+        }
+      }
+    };
+    scan_ops(inst.dsts);
+    scan_ops(inst.srcs);
+  }
+  const uint32_t reg_count = std::min<uint32_t>(255, std::max<uint32_t>(8, max_reg + 1));
+
   // Register and predicate state initialization
-  ss << "  thread Reg32 R[256];\n";
-  ss << "  for (int i = 0; i < 256; ++i) { R[i].u = 0; }\n";
-  ss << "  thread bool P[8] = {false, false, false, false, false, false, false, true};\n";
-  ss << "  R[255].u = 0; // RZ is hardwired to zero\n\n";
+  ss << "  thread Reg32 R[" << reg_count << "];\n";
+  ss << "  for (uint32_t i = 0; i < " << reg_count << "; ++i) { R[i].u = 0; }\n";
+  ss << "  thread bool P[8] = {false, false, false, false, false, false, false, true};\n\n";
 
   // Helper lambda to read from Constant Memory Bank 0 (c[0x0][offset])
   ss << "  auto read_c0 = [&](uint32_t offset) -> uint32_t {\n";
@@ -332,21 +355,39 @@ std::string SassLifter::LiftToMsl(const CubinKernel& kernel,
       EmitInstruction(inst, ss, false, "  ");
     }
   } else {
-    // General State Machine execution loop for control flow graphs
+    // Basic-block grouped State Machine execution loop for control flow graphs
     ss << "  uint32_t pc = 0;\n";
     ss << "  while (pc != 0xFFFFFFFF) {\n";
     ss << "    switch (pc) {\n";
 
+    bool block_open = false;
     for (std::size_t i = 0; i < instructions.size(); ++i) {
       const SassInstruction& inst = instructions[i];
-      ss << "      case " << inst.pc << ": {\n";
-      EmitInstruction(inst, ss, true, "        ");
-      if (inst.opcode != SassOpcode::kBra && inst.opcode != SassOpcode::kExit) {
-        const uint64_t next_pc = (i + 1 < instructions.size()) ? instructions[i + 1].pc : 0xFFFFFFFF;
-        ss << "        pc = " << next_pc << ";\n";
-        ss << "        break;\n";
+      if (!block_open) {
+        ss << "      case " << inst.pc << ": {\n";
+        block_open = true;
       }
-      ss << "      }\n";
+      EmitInstruction(inst, ss, true, "        ");
+
+      const bool is_uncond_term =
+          (inst.predicate_idx == 7) &&
+          (inst.opcode == SassOpcode::kBra || inst.opcode == SassOpcode::kExit);
+      const bool next_is_target =
+          (i + 1 < instructions.size()) && branch_targets.contains(instructions[i + 1].pc);
+      if (is_uncond_term) {
+        ss << "      }\n";
+        block_open = false;
+      } else if (i + 1 == instructions.size()) {
+        ss << "        pc = 0xFFFFFFFF;\n";
+        ss << "        break;\n";
+        ss << "      }\n";
+        block_open = false;
+      } else if (next_is_target) {
+        ss << "        pc = " << instructions[i + 1].pc << ";\n";
+        ss << "        break;\n";
+        ss << "      }\n";
+        block_open = false;
+      }
     }
 
     ss << "      default:\n";

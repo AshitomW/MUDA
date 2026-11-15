@@ -114,14 +114,16 @@ cudaError_t EventManager::EventRecord(cudaEvent_t event_handle, cudaStream_t str
     }
 
     [command_buffer encodeSignalEvent:event->shared_event value:next_ticket];
-    std::weak_ptr<EventState> weak_event = event;
-    [command_buffer addCompletedHandler:^(id<MTLCommandBuffer> completed) {
-      if (auto locked_event = weak_event.lock()) {
-        const double gpu_end = completed.GPUEndTime;
-        const double stamp = (gpu_end > 0.0) ? gpu_end : NowSeconds();
-        locked_event->completion_timestamp_seconds.store(stamp, std::memory_order_release);
-      }
-    }];
+    if ((event->flags & cudaEventDisableTiming) == 0u) {
+      std::weak_ptr<EventState> weak_event = event;
+      [command_buffer addCompletedHandler:^(id<MTLCommandBuffer> completed) {
+        if (auto locked_event = weak_event.lock()) {
+          const double gpu_end = completed.GPUEndTime;
+          const double stamp = (gpu_end > 0.0) ? gpu_end : NowSeconds();
+          locked_event->completion_timestamp_seconds.store(stamp, std::memory_order_release);
+        }
+      }];
+    }
     streams.CommitStreamCommandBufferLocked(stream_state.get(), command_buffer);
     return cudaSuccess;
   }
@@ -145,10 +147,15 @@ cudaError_t EventManager::EventSynchronize(cudaEvent_t event_handle,
   @autoreleasepool {
     if (cmd != nil) {
       [cmd waitUntilCompleted];
-      if (event->completion_timestamp_seconds.load(std::memory_order_acquire) <= 0.0) {
+      if ((event->flags & cudaEventDisableTiming) == 0u &&
+          event->completion_timestamp_seconds.load(std::memory_order_acquire) <= 0.0) {
         const double gpu_end = cmd.GPUEndTime;
         event->completion_timestamp_seconds.store((gpu_end > 0.0) ? gpu_end : NowSeconds(),
                                                   std::memory_order_release);
+      }
+      std::lock_guard<std::mutex> event_lock(event->mutex);
+      if (event->recorded_command_buffer == cmd) {
+        event->recorded_command_buffer = nil;
       }
     }
   }
@@ -200,8 +207,12 @@ cudaError_t EventManager::EventElapsedTime(float* ms, cudaEvent_t start_handle,
     return cudaErrorNotReady;
   }
 
-  (void)EventSynchronize(start_handle, streams);
-  (void)EventSynchronize(end_handle, streams);
+  if (start_event->completion_timestamp_seconds.load(std::memory_order_acquire) <= 0.0) {
+    (void)EventSynchronize(start_handle, streams);
+  }
+  if (end_event->completion_timestamp_seconds.load(std::memory_order_acquire) <= 0.0) {
+    (void)EventSynchronize(end_handle, streams);
+  }
 
   const double start_sec =
       start_event->completion_timestamp_seconds.load(std::memory_order_acquire);

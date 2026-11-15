@@ -300,6 +300,7 @@ bool LinkAirToMetallib(const std::filesystem::path& air_path,
 struct BuildMetallibResult {
   DiagnosticCode code{DiagnosticCode::kOk};
   bool cache_hit{false};
+  std::vector<std::uint8_t> metallib_bytes;
 
   [[nodiscard]] bool ok() const noexcept { return code == DiagnosticCode::kOk; }
 };
@@ -345,21 +346,26 @@ BuildMetallibResult BuildOrLoadMetallib(const IntermediateArtifacts& artifacts,
     return BuildMetallibResult{.code = DiagnosticCode::kMetallibLinkFailed, .cache_hit = false};
   }
 
-  if (cache_enabled) {
-    std::vector<std::uint8_t> compiled_bytes;
-    if (ReadBinaryFile(artifacts.metallib_path, &compiled_bytes)) {
-      (void)cache.Store(cache_key, compiled_bytes);
-    }
+  std::vector<std::uint8_t> compiled_bytes;
+  if (cache_enabled && ReadBinaryFile(artifacts.metallib_path, &compiled_bytes)) {
+    (void)cache.Store(cache_key, compiled_bytes);
   }
 
-  return BuildMetallibResult{.code = DiagnosticCode::kOk, .cache_hit = false};
+  return BuildMetallibResult{.code = DiagnosticCode::kOk,
+                             .cache_hit = false,
+                             .metallib_bytes = std::move(compiled_bytes)};
 }
 
 DiagnosticCode PrepareHostSource(const std::string& source, const TranslationResult& translation,
                                  const IntermediateArtifacts& artifacts,
-                                 std::string_view msl_source) {
+                                 std::string_view msl_source,
+                                 const std::vector<std::uint8_t>* preloaded_metallib) {
   std::vector<std::uint8_t> metallib_bytes;
-  (void)ReadBinaryFile(artifacts.metallib_path, &metallib_bytes);
+  if (preloaded_metallib != nullptr && !preloaded_metallib->empty()) {
+    metallib_bytes = *preloaded_metallib;
+  } else {
+    (void)ReadBinaryFile(artifacts.metallib_path, &metallib_bytes);
+  }
 
   std::vector<TranslatedKernel> kernels_list = translation.kernels;
   if (kernels_list.empty()) {
@@ -559,8 +565,9 @@ CompileResult Compile(const CompileOptions& options) {
                    std::move(translation.kernel.name), metallib_result.cache_hit);
   }
 
-  const DiagnosticCode host_prep_code =
-      PrepareHostSource(source, translation, artifacts, msl_source);
+  const DiagnosticCode host_prep_code = PrepareHostSource(
+      source, translation, artifacts, msl_source,
+      metallib_result.metallib_bytes.empty() ? nullptr : &metallib_result.metallib_bytes);
   if (host_prep_code != DiagnosticCode::kOk) {
     return Failure(host_prep_code);
   }

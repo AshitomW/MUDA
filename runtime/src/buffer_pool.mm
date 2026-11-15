@@ -47,6 +47,7 @@ BufferPool::BufferPool() noexcept
       enabled_(!CheckPoolDisabledEnv()) {
   for (std::size_t i = 0; i < kBufferPoolNumBins; ++i) {
     bins_[i].capacity = std::size_t{1} << (kBufferPoolMinPower + i);
+    bins_[i].free_buffers.reserve(kBufferPoolMaxBuffersPerBin);
   }
 }
 
@@ -93,12 +94,12 @@ id<MTLBuffer> BufferPool::Acquire(std::size_t size, id<MTLDevice> device,
 
   id<MTLBuffer> pooled_buffer = nil;
   {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<std::mutex> lock(bins_[bin_idx].mutex);
     auto& free_list = bins_[bin_idx].free_buffers;
     if (!free_list.empty()) {
-      pooled_buffer = free_list.back();
+      pooled_buffer = std::move(free_list.back());
       free_list.pop_back();
-      total_cached_bytes_ -= target_capacity;
+      total_cached_bytes_.fetch_sub(target_capacity, std::memory_order_relaxed);
     }
   }
 
@@ -131,29 +132,32 @@ void BufferPool::Release(id<MTLBuffer> buffer, std::size_t capacity) noexcept {
 
   const std::size_t bin_idx = BinIndexForCapacity(capacity);
 
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::lock_guard<std::mutex> lock(bins_[bin_idx].mutex);
   if (bins_[bin_idx].free_buffers.size() >= kBufferPoolMaxBuffersPerBin) {
     return;
   }
-  if (total_cached_bytes_ + capacity > max_total_bytes_) {
+  const std::size_t current_cached = total_cached_bytes_.load(std::memory_order_relaxed);
+  if (current_cached + capacity > max_total_bytes_) {
     return;
   }
 
   bins_[bin_idx].free_buffers.push_back(buffer);
-  total_cached_bytes_ += capacity;
+  total_cached_bytes_.fetch_add(capacity, std::memory_order_relaxed);
 }
 
 void BufferPool::Purge() noexcept {
-  std::lock_guard<std::mutex> lock(mutex_);
   for (auto& bin : bins_) {
+    std::lock_guard<std::mutex> lock(bin.mutex);
+    const std::size_t freed = bin.free_buffers.size() * bin.capacity;
     bin.free_buffers.clear();
+    if (freed > 0) {
+      total_cached_bytes_.fetch_sub(freed, std::memory_order_relaxed);
+    }
   }
-  total_cached_bytes_ = 0;
 }
 
 std::size_t BufferPool::TotalCachedBytes() const noexcept {
-  std::lock_guard<std::mutex> lock(mutex_);
-  return total_cached_bytes_;
+  return total_cached_bytes_.load(std::memory_order_relaxed);
 }
 
 bool BufferPool::IsEnabled() const noexcept {

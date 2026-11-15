@@ -49,24 +49,6 @@ bool ContainsCallTo(std::string_view body, std::string_view fn_name) noexcept {
   return false;
 }
 
-bool ContainsIdentifier(std::string_view body, std::string_view ident) noexcept {
-  for (std::size_t index = 0; index < body.size();) {
-    if (!IsIdentifierStart(body[index])) {
-      ++index;
-      continue;
-    }
-    const std::size_t start = index;
-    ++index;
-    while (index < body.size() && IsIdentifierChar(body[index])) {
-      ++index;
-    }
-    if (body.substr(start, index - start) == ident) {
-      return true;
-    }
-  }
-  return false;
-}
-
 bool ModuleUsesSimdgroupMatrix(const Module& module) noexcept {
   for (const DeviceFunction& fn : module.device_functions) {
     if (fn.lowered_body.find("simdgroup_") != std::string::npos) {
@@ -207,27 +189,71 @@ void EmitKernelFunctionMsl(const KernelFunction& kernel, std::string* out) {
     }
   }
 
-  if (ContainsIdentifier(kernel.lowered_body, "thread_position_in_threadgroup")) {
+  std::uint32_t builtins = 0u;
+  constexpr std::uint32_t kTid = 1u << 0;
+  constexpr std::uint32_t kTgid = 1u << 1;
+  constexpr std::uint32_t kTpt = 1u << 2;
+  constexpr std::uint32_t kTpg = 1u << 3;
+  constexpr std::uint32_t kSimdLane = 1u << 4;
+  constexpr std::uint32_t kSimdGroup = 1u << 5;
+  {
+    const std::string_view body = kernel.lowered_body;
+    for (std::size_t i = 0; i < body.size();) {
+      const char ch = body[i];
+      if (!((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_')) {
+        ++i;
+        continue;
+      }
+      const std::size_t start = i++;
+      while (i < body.size()) {
+        const char c = body[i];
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+              c == '_')) {
+          break;
+        }
+        ++i;
+      }
+      const std::string_view tok = body.substr(start, i - start);
+      if (tok == "thread_position_in_threadgroup") {
+        builtins |= kTid;
+      } else if (tok == "threadgroup_position_in_grid") {
+        builtins |= kTgid;
+      } else if (tok == "threads_per_threadgroup") {
+        builtins |= kTpt;
+      } else if (tok == "threadgroups_per_grid") {
+        builtins |= kTpg;
+      } else if (tok == "simd_lane_id") {
+        builtins |= kSimdLane;
+      } else if (tok == "simd_group_id") {
+        builtins |= kSimdGroup;
+      }
+      if (builtins == (kTid | kTgid | kTpt | kTpg | kSimdLane | kSimdGroup)) {
+        break;
+      }
+    }
+  }
+
+  if ((builtins & kTid) != 0u) {
     append_comma();
     *out += "    uint3 thread_position_in_threadgroup [[thread_position_in_threadgroup]]";
   }
-  if (ContainsIdentifier(kernel.lowered_body, "threadgroup_position_in_grid")) {
+  if ((builtins & kTgid) != 0u) {
     append_comma();
     *out += "    uint3 threadgroup_position_in_grid [[threadgroup_position_in_grid]]";
   }
-  if (ContainsIdentifier(kernel.lowered_body, "threads_per_threadgroup")) {
+  if ((builtins & kTpt) != 0u) {
     append_comma();
     *out += "    uint3 threads_per_threadgroup [[threads_per_threadgroup]]";
   }
-  if (ContainsIdentifier(kernel.lowered_body, "threadgroups_per_grid")) {
+  if ((builtins & kTpg) != 0u) {
     append_comma();
     *out += "    uint3 threadgroups_per_grid [[threadgroups_per_grid]]";
   }
-  if (ContainsIdentifier(kernel.lowered_body, "simd_lane_id")) {
+  if ((builtins & kSimdLane) != 0u) {
     append_comma();
     *out += "    uint simd_lane_id [[thread_index_in_simdgroup]]";
   }
-  if (ContainsIdentifier(kernel.lowered_body, "simd_group_id")) {
+  if ((builtins & kSimdGroup) != 0u) {
     append_comma();
     *out += "    uint simd_group_id [[simdgroup_index_in_threadgroup]]";
   }

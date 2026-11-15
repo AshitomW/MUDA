@@ -176,14 +176,24 @@ bool MemoryManager::ResolveBuffer(DeviceAddress addr, id<MTLBuffer> __strong* ou
 bool MemoryManager::ResolveBufferFast(DeviceAddress addr,
                                       __unsafe_unretained id<MTLBuffer>* out_buffer,
                                       std::size_t* out_offset) const noexcept {
+  std::size_t unused_size = 0;
+  return ResolveEndpointFast(addr, out_buffer, out_offset, &unused_size);
+}
+
+bool MemoryManager::ResolveEndpointFast(DeviceAddress addr,
+                                        __unsafe_unretained id<MTLBuffer>* out_buffer,
+                                        std::size_t* out_offset,
+                                        std::size_t* out_size) const noexcept {
   // Fast lock-free path if AllocationTable's thread-local MRU cache matches current epoch
-  const AllocationRecord* mru_rec = allocations_.FindContainingMruOnly(addr);
-  if (mru_rec != nullptr) {
-    if ((addr.value - mru_rec->base_address.value) >= mru_rec->size) {
+  AllocationMruHit mru_hit;
+  if (allocations_.FindContainingMruOnly(addr, &mru_hit)) {
+    const std::size_t off = static_cast<std::size_t>(addr.value - mru_hit.base_address.value);
+    if (off >= mru_hit.size) {
       return false;
     }
-    *out_buffer = mru_rec->buffer;
-    *out_offset = static_cast<std::size_t>(addr.value - mru_rec->base_address.value);
+    *out_buffer = mru_hit.buffer;
+    *out_offset = off;
+    *out_size = mru_hit.size;
     return true;
   }
 
@@ -194,6 +204,7 @@ bool MemoryManager::ResolveBufferFast(DeviceAddress addr,
   }
   *out_buffer = record->buffer;
   *out_offset = static_cast<std::size_t>(addr.value - record->base_address.value);
+  *out_size = record->size;
   return true;
 }
 
