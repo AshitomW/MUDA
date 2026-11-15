@@ -23,11 +23,7 @@ namespace {
 
 template <typename Fn>
 cudaError_t InvokeCAbi(Fn&& fn) noexcept {
-  @try {
-    return fn();
-  } @catch (...) {
-    return RecordError(cudaErrorInternalError);
-  }
+  return fn();
 }
 
 template <typename Fn>

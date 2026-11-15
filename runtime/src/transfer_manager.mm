@@ -72,9 +72,9 @@ cudaError_t ValidateLightweightEndpoints(const LightweightEndpoint& dst_ep,
   return RecordError(cudaErrorInvalidMemcpyDirection);
 }
 
-cudaError_t EncodeBlitCopy(id<MTLCommandQueue> queue, id<MTLBuffer> src_buf, std::size_t src_off,
-                           id<MTLBuffer> dst_buf, std::size_t dst_off, std::size_t count,
-                           StreamState* stream_state, StreamManager* streams) noexcept {
+template <typename Fn>
+cudaError_t WithBatchedBlitEncoder(id<MTLCommandQueue> queue, StreamState* stream_state,
+                                   StreamManager* streams, Fn&& fn) noexcept {
   @autoreleasepool {
     if (streams != nullptr) {
       std::unique_lock<std::mutex> lock =
@@ -121,11 +121,7 @@ cudaError_t EncodeBlitCopy(id<MTLCommandQueue> queue, id<MTLBuffer> src_buf, std
         }
       }
 
-      [active_blit copyFromBuffer:src_buf
-                     sourceOffset:src_off
-                         toBuffer:dst_buf
-                destinationOffset:dst_off
-                             size:count];
+      fn(active_blit);
       active_disp++;
       if (stream_state == nullptr) {
         streams->SetDefaultActiveDispatchesAtomic(active_disp);
@@ -145,16 +141,24 @@ cudaError_t EncodeBlitCopy(id<MTLCommandQueue> queue, id<MTLBuffer> src_buf, std
     if (cmd == nil || blit == nil) {
       return RecordError(cudaErrorLaunchFailure);
     }
-    [blit copyFromBuffer:src_buf
-             sourceOffset:src_off
-                 toBuffer:dst_buf
-        destinationOffset:dst_off
-                     size:count];
+    fn(blit);
     [blit endEncoding];
     [cmd commit];
     [cmd waitUntilCompleted];
     return cudaSuccess;
   }
+}
+
+cudaError_t EncodeBlitCopy(id<MTLCommandQueue> queue, id<MTLBuffer> src_buf, std::size_t src_off,
+                           id<MTLBuffer> dst_buf, std::size_t dst_off, std::size_t count,
+                           StreamState* stream_state, StreamManager* streams) noexcept {
+  return WithBatchedBlitEncoder(queue, stream_state, streams, [&](id<MTLBlitCommandEncoder> blit) {
+    [blit copyFromBuffer:src_buf
+            sourceOffset:src_off
+                toBuffer:dst_buf
+       destinationOffset:dst_off
+                    size:count];
+  });
 }
 
 }  // namespace
@@ -287,6 +291,34 @@ cudaError_t TransferManager::Memcpy2DAsync(void* dst, std::size_t dpitch, const 
     return val_status;
   }
 
+  if (dst_ep.found && src_ep.found && (dst_ep.buffer != src_ep.buffer || dst_addr != src_addr)) {
+    std::shared_ptr<StreamState> stream_state;
+    id<MTLCommandQueue> target_queue = nil;
+    const cudaError_t s_status =
+        streams.ResolveStreamQueue(stream_handle, default_queue, &stream_state, &target_queue);
+    if (s_status != cudaSuccess) {
+      return s_status;
+    }
+    return WithBatchedBlitEncoder(
+        target_queue, stream_state.get(), &streams, [&](id<MTLBlitCommandEncoder> blit) {
+          if (dpitch == width && spitch == width) {
+            [blit copyFromBuffer:src_ep.buffer
+                    sourceOffset:src_ep.offset
+                        toBuffer:dst_ep.buffer
+               destinationOffset:dst_ep.offset
+                            size:width * height];
+          } else {
+            for (std::size_t row = 0; row < height; ++row) {
+              [blit copyFromBuffer:src_ep.buffer
+                      sourceOffset:src_ep.offset + row * spitch
+                          toBuffer:dst_ep.buffer
+                 destinationOffset:dst_ep.offset + row * dpitch
+                              size:width];
+            }
+          }
+        });
+  }
+
   if (touches_device && streams.HasPendingWork()) {
     const cudaError_t sync_status = streams.StreamSynchronize(stream_handle, default_queue);
     if (sync_status != cudaSuccess) {
@@ -345,33 +377,20 @@ cudaError_t TransferManager::MemsetAsync(void* dev_ptr, int value, std::size_t c
   }
 
   const DeviceAddress addr = DeviceAddress::FromPointer(dev_ptr);
-  const auto rec = memory.SnapshotRecord(addr);
-  if (!rec.has_value() || !AllocationTable::IsRangeValid(&*rec, addr, count)) {
+  __unsafe_unretained id<MTLBuffer> buf = nil;
+  std::size_t offset = 0;
+  std::size_t alloc_size = 0;
+  if (!memory.ResolveEndpointFast(addr, &buf, &offset, &alloc_size) || count > (alloc_size - offset)) {
     return RecordError(cudaErrorInvalidValue);
   }
 
-  if (stream_state != nullptr) {
-    std::lock_guard<std::mutex> stream_lock(stream_state->mutex);
-    streams.FlushStreamLocked(stream_state.get());
-  } else {
-    std::lock_guard<std::mutex> def_lock(streams.DefaultStreamMutex());
-    streams.FlushDefaultStreamLocked();
-  }
-
-  @autoreleasepool {
-    id<MTLCommandBuffer> cmd = [target_queue commandBuffer];
-    id<MTLBlitCommandEncoder> blit = [cmd blitCommandEncoder];
-    if (cmd == nil || blit == nil) {
-      return RecordError(cudaErrorLaunchFailure);
-    }
-    const std::size_t offset = static_cast<std::size_t>(addr.value - rec->base_address.value);
-    [blit fillBuffer:rec->buffer
-               range:NSMakeRange(offset, count)
-               value:static_cast<std::uint8_t>(value & 0xFF)];
-    [blit endEncoding];
-    streams.CommitStreamCommandBuffer(stream_state.get(), cmd);
-    return cudaSuccess;
-  }
+  const std::uint8_t byte_val = static_cast<std::uint8_t>(value & 0xFF);
+  return WithBatchedBlitEncoder(target_queue, stream_state.get(), &streams,
+                                [&](id<MTLBlitCommandEncoder> blit) {
+                                  [blit fillBuffer:buf
+                                             range:NSMakeRange(offset, count)
+                                             value:byte_val];
+                                });
 }
 
 cudaError_t TransferManager::Memset2D(void* dev_ptr, std::size_t pitch, int value,
